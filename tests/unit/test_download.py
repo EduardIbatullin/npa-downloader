@@ -70,7 +70,9 @@ def test_skip_redownload(tmp_path: Path):
         pages=1,
         store=store,
     )
-    assert path.name == "Указ Президента Российской Федерации от 01_01_2020 N 1.pdf"
+    # «Президента Российской Федерации» -> «Президента РФ»: сокращение органов
+    # в имени файла намеренное (см. naming.py, README «Имена PDF НПА …»)
+    assert path.name == "Указ Президента РФ от 01_01_2020 N 1.pdf"
     assert path.exists()
     assert already_downloaded(store, "0001") == path
     assert not path.with_suffix(".json").exists()

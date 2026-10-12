@@ -93,10 +93,12 @@ result = fetch_document(
 # 3) Если уже известен eoNumber портала
 result = fetch_document(Query(eo_number="0001202507310060"))
 
-print(result.status)       # Status.FOUND, …
+print(result.status)          # Status.FOUND, …
 print(result.eo_number)
-print(result.pdf_path)     # путь к файлу при download=True
-print(result.to_dict())    # JSON-совместимый dict
+print(result.pdf_path)        # путь к PDF при download=True — скачивается в любом случае
+print(result.ebpi_docx_path)  # текст из EBPI (см. ниже) в .docx рядом с PDF, если документ там есть
+print(result.ebpi_docstate)   # напр. «Действует без изменений» / «Действует с изменениями»
+print(result.to_dict())       # JSON-совместимый dict
 ```
 
 Разбор названия отдельно (без сети):
@@ -126,6 +128,16 @@ query = parsed.to_query()
 | `integrity_error` | Файл не прошёл проверку PDF |
 
 `match_type`: `exact` (точное совпадение номера) или `digits_only` (запасной поиск по цифровой части).
+
+После успешного скачивания PDF `fetch_document()` пробует найти документ в EBPI
+(`actual.pravo.gov.ru`) и при успехе кладёт действующую редакцию текста (с учётом
+поправок) в `.docx` рядом с PDF — см. поля `ebpi_docx_path`/`ebpi_docstate` выше.
+Покрыты только законы, указы, постановления/распоряжения Правительства, акты
+высших судов и Банка России — ведомственные приказы нет; `ebpi_docx_path` тогда
+остаётся `None`, это не ошибка. Результат кэшируется в БД (включая отрицательный
+— «не покрыт»), повторный `fetch_document()` на том же документе не ходит в сеть
+за EBPI заново. Подробности — [`docs/ebpi-coverage.md`](docs/ebpi-coverage.md).
+Отключить: `fetch_document(..., fetch_ebpi_text=False)`.
 
 Алгоритм поиска (резолвинг органа, фильтр по дате, коллизии номеров, совместные приказы) — в [`docs/stage1-plan.md`](docs/stage1-plan.md). Поведение API портала — в [`docs/api-reference.md`](docs/api-reference.md).
 
@@ -286,6 +298,7 @@ pytest -m live         # эталонный набор против живого
 - ИТС ищутся только среди уже просканированных карточек локального кэша.
 - Охват НПА на портале roughly с ноября 2011; раньше → `out_of_range` после неудачного поиска.
 - OCR в веб-интерфейсе: одно задание за раз, список заданий хранится в памяти процесса веб-сервера (после перезапуска сервера задание надо запустить заново, но уже сохранённые страницы продолжатся). Для самого распознавания — тайминги, пределы по таблицам/печатям, требования к памяти — см. README и docs/plan.md в [npa-ocr](https://github.com/EduardIbatullin/npa-ocr).
+- EBPI (`actual.pravo.gov.ru`) нигде официально не документирован — найден и используется через реверс-инжиниринг минифицированного JS сайта; покрытие по видам актов проверено на 14 документах, не исчерпывающе. Подробности — [`docs/ebpi-coverage.md`](docs/ebpi-coverage.md).
 - Клиент ходит на pravo по `http://` (в части окружений `https` зависает на TCP); целостность файла проверяется локально.
 
 ---
@@ -298,6 +311,8 @@ src/npa_pipeline/     # библиотека
   search.py           # алгоритм поиска НПА
   parse_citation.py   # название → Query
   its.py / its_download.py / burondt.py
+  ebpi.py             # клиент к actual.pravo.gov.ru — текст действующей редакции
+  ebpi_docx.py        # HTML EBPI -> .docx
   webapp.py + static/ # тестовый UI
   cli.py
   ocr_jobs.py         # фоновое задание веб-UI: запускает npa-ocr отдельным процессом

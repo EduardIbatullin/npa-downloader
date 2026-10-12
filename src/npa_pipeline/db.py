@@ -76,6 +76,20 @@ CREATE TABLE IF NOT EXISTS document_files (
     FOREIGN KEY (eo_number) REFERENCES documents(eo_number)
 );
 
+CREATE TABLE IF NOT EXISTS document_ebpi (
+    eo_number TEXT PRIMARY KEY,
+    covered INTEGER NOT NULL,   -- 0/1: найден ли документ в EBPI вообще (кэшируем
+                                -- и отрицательный результат — большинство приказов
+                                -- там не покрыты, см. npa_pipeline.ebpi)
+    docid INTEGER,
+    docstate TEXT,
+    redid INTEGER,
+    red_date TEXT,
+    docx_path TEXT,
+    checked_at TEXT NOT NULL,
+    FOREIGN KEY (eo_number) REFERENCES documents(eo_number)
+);
+
 CREATE TABLE IF NOT EXISTS document_relations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_eo TEXT NOT NULL,
@@ -141,6 +155,21 @@ class FileRecord:
     pages: int | None
     downloaded_at: str
     verified_at: str | None = None
+
+
+@dataclass
+class EbpiRecord:
+    """Результат проверки документа в EBPI — в т.ч. отрицательный (covered=False),
+    чтобы не дёргать сеть повторно за уже известным «не покрыт», см. npa_pipeline.ebpi."""
+
+    eo_number: str
+    covered: bool
+    docid: int | None
+    docstate: str | None
+    redid: int | None
+    red_date: str | None
+    docx_path: str | None
+    checked_at: str
 
 
 def resolve_db_path(db_path: str | Path = DEFAULT_DB_PATH) -> Path:
@@ -412,6 +441,74 @@ class DocumentStore:
             pages=row["pages"],
             downloaded_at=row["downloaded_at"],
             verified_at=row["verified_at"],
+        )
+
+    def record_ebpi(
+        self,
+        *,
+        eo_number: str,
+        covered: bool,
+        docid: int | None = None,
+        docstate: str | None = None,
+        redid: int | None = None,
+        red_date: str | None = None,
+        docx_path: str | Path | None = None,
+    ) -> EbpiRecord:
+        now = utc_now_iso()
+        path_str = str(docx_path) if docx_path is not None else None
+        with self._connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM documents WHERE eo_number = ?",
+                (eo_number,),
+            ).fetchone()
+            if not exists:
+                raise ValueError(f"Документ {eo_number} не найден в БД — сначала upsert")
+
+            conn.execute(
+                """
+                INSERT INTO document_ebpi (
+                    eo_number, covered, docid, docstate, redid, red_date, docx_path, checked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(eo_number) DO UPDATE SET
+                    covered = excluded.covered,
+                    docid = excluded.docid,
+                    docstate = excluded.docstate,
+                    redid = excluded.redid,
+                    red_date = excluded.red_date,
+                    docx_path = excluded.docx_path,
+                    checked_at = excluded.checked_at
+                """,
+                (eo_number, int(covered), docid, docstate, redid, red_date, path_str, now),
+            )
+            conn.commit()
+        return EbpiRecord(
+            eo_number=eo_number,
+            covered=covered,
+            docid=docid,
+            docstate=docstate,
+            redid=redid,
+            red_date=red_date,
+            docx_path=path_str,
+            checked_at=now,
+        )
+
+    def get_ebpi(self, eo_number: str) -> EbpiRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM document_ebpi WHERE eo_number = ?",
+                (eo_number,),
+            ).fetchone()
+        if not row:
+            return None
+        return EbpiRecord(
+            eo_number=row["eo_number"],
+            covered=bool(row["covered"]),
+            docid=row["docid"],
+            docstate=row["docstate"],
+            redid=row["redid"],
+            red_date=row["red_date"],
+            docx_path=row["docx_path"],
+            checked_at=row["checked_at"],
         )
 
     def get_document_row(self, eo_number: str) -> dict[str, Any] | None:

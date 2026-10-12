@@ -101,6 +101,13 @@ class Result:
     eo_number: str | None = None
     pdf_path: str | None = None
     message: str | None = None
+    # Текст из эталонного банка правовой информации (EBPI, actual.pravo.gov.ru) —
+    # заполняется только если документ там покрыт (законы, указы, постановления/
+    # распоряжения Правительства, акты высших судов и Банка России; ведомственные
+    # приказы не покрыты, см. npa_pipeline.ebpi). None — не покрыт или сбой сети;
+    # это не ошибка всего результата, PDF при этом уже скачан и доступен.
+    ebpi_docx_path: str | None = None
+    ebpi_docstate: str | None = None  # напр. «Действует без изменений» / «Действует с изменениями»
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +119,8 @@ class Result:
             "eo_number": self.eo_number,
             "pdf_path": self.pdf_path,
             "message": self.message,
+            "ebpi_docx_path": self.ebpi_docx_path,
+            "ebpi_docstate": self.ebpi_docstate,
         }
 
 

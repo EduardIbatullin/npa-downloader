@@ -117,3 +117,69 @@ def test_import_json_sidecar(tmp_path: Path):
     assert not (out / "demo.json").exists()
     assert store.get_file("0001202306010022") is not None
     assert already_downloaded(store, "0001202306010022") == pdf.resolve()
+
+
+def test_get_ebpi_none_when_never_checked(tmp_path: Path):
+    store = DocumentStore(tmp_path / "npa.db")
+    card = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    store.upsert_from_card(card)
+    assert store.get_ebpi(card["eoNumber"]) is None
+
+
+def test_record_ebpi_covered_roundtrip(tmp_path: Path):
+    store = DocumentStore(tmp_path / "npa.db")
+    card = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    eo = store.upsert_from_card(card)
+
+    store.record_ebpi(
+        eo_number=eo,
+        covered=True,
+        docid=318024,
+        docstate="Действует с изменениями",
+        redid=473307,
+        red_date="20250901",
+        docx_path=tmp_path / "doc.docx",
+    )
+    rec = store.get_ebpi(eo)
+    assert rec is not None
+    assert rec.covered is True
+    assert rec.docid == 318024
+    assert rec.docstate == "Действует с изменениями"
+    assert rec.redid == 473307
+    assert rec.red_date == "20250901"
+    assert rec.docx_path == str(tmp_path / "doc.docx")
+
+
+def test_record_ebpi_not_covered_roundtrip(tmp_path: Path):
+    store = DocumentStore(tmp_path / "npa.db")
+    card = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    eo = store.upsert_from_card(card)
+
+    store.record_ebpi(eo_number=eo, covered=False)
+    rec = store.get_ebpi(eo)
+    assert rec is not None
+    assert rec.covered is False
+    assert rec.docid is None
+    assert rec.docx_path is None
+
+
+def test_record_ebpi_upsert_overwrites_previous(tmp_path: Path):
+    store = DocumentStore(tmp_path / "npa.db")
+    card = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    eo = store.upsert_from_card(card)
+
+    store.record_ebpi(eo_number=eo, covered=False)
+    assert store.get_ebpi(eo).covered is False
+
+    store.record_ebpi(eo_number=eo, covered=True, docid=1, docstate="x", redid=2, red_date="y", docx_path="d.docx")
+    rec = store.get_ebpi(eo)
+    assert rec.covered is True
+    assert rec.docid == 1
+
+
+def test_record_ebpi_unknown_document_raises(tmp_path: Path):
+    import pytest
+
+    store = DocumentStore(tmp_path / "npa.db")
+    with pytest.raises(ValueError, match="не найден"):
+        store.record_ebpi(eo_number="нет-такого", covered=False)
