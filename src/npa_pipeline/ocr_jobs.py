@@ -1,9 +1,15 @@
 """Фоновое распознавание скана для веб-приложения.
 
-Распознавание запускается отдельным процессом (та же команда, что `npa ocr`): тяжёлые
-модели не живут в процессе веб-сервера, а падение или остановка защитой памяти не
+OCR живёт в отдельном проекте (npa-ocr, https://github.com/EduardIbatullin/npa-ocr)
+и запускается здесь как внешний процесс — установленная команда `npa-ocr` (см. её
+README, раздел «Внешний контракт»), а не импорт модуля. Так тяжёлые модели (PaddleOCR,
+torch) не живут в процессе веб-сервера, а падение или остановка защитой памяти не
 роняет приложение. Одновременно выполняется не больше одного задания — на машине
 с 16 ГБ RAM параллельные прогоны уже приводили к нехватке памяти.
+
+Команда `npa-ocr` должна быть на PATH того окружения, где запущен веб-сервер
+(`pip install npa-ocr[models]` в тот же venv, или отдельно и путь передан через
+command_builder). Без неё задания будут падать сразу с кодом возврата, отличным от 0.
 
 Прогресс берётся из журнала stderr дочернего процесса (строки «[  x%] страница N из M»).
 Результат — DOCX, промежуточные страницы лежат в <stem>.pages: повторный запуск того
@@ -16,7 +22,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -24,7 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from npa_pipeline.ocr import DEFAULT_MIN_PAGE_TEXT_CHARS
+# Должно совпадать с DEFAULT_MIN_PAGE_TEXT_CHARS в npa-ocr (src/npa_ocr/ocr.py) —
+# именно по этому порогу npa-ocr решает, распознавать страницу или взять текстовый
+# слой как есть. Это текстовая константа внешнего контракта, не импорт: npa-downloader
+# намеренно не зависит от пакета npa-ocr (см. докстринг модуля).
+DEFAULT_MIN_PAGE_TEXT_CHARS = 20
 
 PROGRESS_RE = re.compile(r"\[\s*([\d.]+)%\]\s*страница\s+(\d+)\s+из\s+(\d+):\s*(.+)")
 STEP_RE = re.compile(r"^\s*\[стр\.\s*\d+\]\s*(.+?):\s*([\d.]+)\s*(с|мин)")
@@ -108,7 +117,9 @@ class OcrJob:
 
 
 def _default_command(pdf_path: Path, docx_path: Path, authority_name: str | None) -> list[str]:
-    cmd = [sys.executable, "-m", "npa_pipeline.cli", "ocr", str(pdf_path), "--out", str(docx_path)]
+    """Внешняя команда npa-ocr (отдельный проект, должна быть на PATH) — не вызов
+    модуля в этом процессе. См. докстринг модуля и README npa-ocr, «Внешний контракт»."""
+    cmd = ["npa-ocr", str(pdf_path), "--out", str(docx_path)]
     if authority_name:
         cmd += ["--authority-name", authority_name]
     return cmd

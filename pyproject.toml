@@ -16,24 +16,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pymupdf>=1.24",  # только для генерации тестовых PDF в test_ocr_jobs.py
 ]
 web = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
 ]
-ocr = [
-    "paddleocr>=3.7",
-    "paddlepaddle",
-    "paddlex[ocr]",
-    "python-docx>=1.1",
-    "pytesseract>=0.3.10",
-    "pymupdf>=1.24",
-    "Pillow>=10.0",
-    "psutil>=5.9",
-    "torch",
-    "transformers>=4.45,<5",
-    "timm",
-]
+# OCR вынесен в отдельный проект npa-ocr (https://github.com/EduardIbatullin/npa-ocr).
+# Для кнопки «Распознать скан» в веб-UI команда `npa-ocr` должна быть на PATH —
+# `pip install npa-ocr[models]` отдельно (пакет этого проекта её не тянет).
 
 [project.scripts]
 npa = "npa_pipeline.cli:main"

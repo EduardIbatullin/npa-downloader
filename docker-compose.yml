@@ -4,11 +4,7 @@ services:
     ports:
       - "8765:8765"
     volumes:
-      # БД, скачанные PDF и результаты OCR сохраняются на хосте между перезапусками
+      # БД и скачанные PDF сохраняются на хосте между перезапусками
       - ./data:/app/data
       - ./downloads:/app/downloads
-      # Кэш моделей PaddleX и Hugging Face (TATR): первый прогон скачивает ~1–2 ГБ
-      - ./cache:/app/cache
-    # Лимит памяти для OCR: распознавание требует до ~4 ГБ на процесс
-    mem_limit: 12g
     restart: unless-stopped

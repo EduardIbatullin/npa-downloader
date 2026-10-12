@@ -15,13 +15,6 @@ from npa_pipeline.import_json import import_json_sidecars
 from npa_pipeline.its import ItsCache
 from npa_pipeline.its_download import fetch_its
 from npa_pipeline.models import Query, parse_user_date
-from npa_pipeline.ocr import (
-    DEFAULT_CONFIDENCE_THRESHOLD,
-    DEFAULT_DPI,
-    DEFAULT_MIN_FREE_MEMORY_MB,
-    InsufficientMemoryError,
-    ocr_document,
-)
 from npa_pipeline.parse_citation import parse_citation
 from npa_pipeline.service import fetch_document
 
@@ -102,36 +95,6 @@ def cmd_fetch_its(args: argparse.Namespace) -> int:
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     return 0 if result.status.value == "found" else 1
 
-
-def cmd_ocr(args: argparse.Namespace) -> int:
-    out_path = Path(args.out) if args.out else Path(args.pdf).with_suffix(".docx")
-    try:
-        result = ocr_document(
-            args.pdf,
-            out_path,
-            dpi=args.dpi,
-            confidence_threshold=args.confidence_threshold,
-            authority_name=args.authority_name,
-            min_free_memory_mb=args.min_free_mb,
-            pages_dir=args.pages_dir,
-            resume=not args.no_resume,
-        )
-    except InsufficientMemoryError as exc:
-        print(json.dumps({"status": "insufficient_memory", "message": str(exc)}, ensure_ascii=False, indent=2))
-        return 1
-    pages_ocr_applied = sum(1 for p in result.pages if p.ocr_applied)
-    print(
-        json.dumps(
-            {
-                "docx": str(result.docx_path),
-                "pages": len(result.pages),
-                "pages_ocr_applied": pages_ocr_applied,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
-    return 0
 
 
 def cmd_import_json(args: argparse.Namespace) -> int:
@@ -220,43 +183,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fetch_its_cmd.set_defaults(func=cmd_fetch_its)
 
-    ocr_cmd = sub.add_parser(
-        "ocr",
-        help="Распознать скан без текстового слоя (OCR) и собрать DOCX (этап 3)",
-    )
-    ocr_cmd.add_argument("pdf", help="Путь к PDF")
-    ocr_cmd.add_argument("--out", help="Путь к выходному DOCX (по умолчанию <pdf>.docx)")
-    ocr_cmd.add_argument(
-        "--authority-name",
-        help=(
-            "Орган-подписант (например «Правительство Российской Федерации») — "
-            "если задан, повреждённая печатью формула должности подписанта "
-            "восстанавливается; ФИО подписанта не восстанавливается никогда"
-        ),
-    )
-    ocr_cmd.add_argument("--dpi", type=int, default=DEFAULT_DPI, help="DPI рендера страниц-сканов")
-    ocr_cmd.add_argument(
-        "--confidence-threshold",
-        type=int,
-        default=DEFAULT_CONFIDENCE_THRESHOLD,
-        help="Порог confidence Tesseract, ниже которого слово помечается [нрзб.]",
-    )
-    ocr_cmd.add_argument(
-        "--min-free-mb",
-        type=int,
-        default=DEFAULT_MIN_FREE_MEMORY_MB,
-        help="Минимум свободной памяти (МБ) перед каждой страницей-сканом; 0 — отключить проверку",
-    )
-    ocr_cmd.add_argument(
-        "--pages-dir",
-        help="Папка для постраничных результатов (по умолчанию <out>.pages)",
-    )
-    ocr_cmd.add_argument(
-        "--no-resume",
-        action="store_true",
-        help="Распознать все страницы заново, даже если они уже сохранены в --pages-dir",
-    )
-    ocr_cmd.set_defaults(func=cmd_ocr)
+    # Подкоманда `ocr` отсюда убрана 2026-10-12: OCR выделен в отдельный проект
+    # npa-ocr (https://github.com/EduardIbatullin/npa-ocr), своя команда `npa-ocr
+    # <pdf> [опции]`. Веб-UI запускает её как внешний процесс — см. ocr_jobs.py.
 
     imp = sub.add_parser(
         "import-json",
