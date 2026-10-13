@@ -108,6 +108,11 @@ class Result:
     # это не ошибка всего результата, PDF при этом уже скачан и доступен.
     ebpi_docx_path: str | None = None
     ebpi_docstate: str | None = None  # напр. «Действует без изменений» / «Действует с изменениями»
+    # Резервный .docx, когда EBPI документ не покрывает, но PDF не скан (текстовый
+    # слой есть на всех страницах) — механическое извлечение текста (pypdf), без
+    # OCR и без распознавания структуры/таблиц, см. npa_pipeline.text_layer_docx.
+    # None — EBPI уже дал текст, либо PDF — скан (там нужен OCR), либо сбой.
+    text_layer_docx_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +126,7 @@ class Result:
             "message": self.message,
             "ebpi_docx_path": self.ebpi_docx_path,
             "ebpi_docstate": self.ebpi_docstate,
+            "text_layer_docx_path": self.text_layer_docx_path,
         }
 
 
@@ -135,6 +141,11 @@ class ItsFileResult:
     caption: str | None = None  # подпись с карточки burondt — для UI
     order_number_caption: str | None = None
     order_date_caption: str | None = None
+    # Текст PDF-файла, если он не скан (текстовый слой на всех страницах) —
+    # механическое извлечение (pypdf), без OCR. ИТС структурно не ищутся в EBPI
+    # (нет eoNumber), поэтому это не fallback после EBPI, как у НПА, а единственный
+    # путь получить .docx. None — файл не PDF (уже Word), скан, или сбой.
+    text_layer_docx_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +159,7 @@ class ItsFileResult:
             "order_number_caption": self.order_number_caption,
             "order_date_caption": self.order_date_caption,
             "order_meta_verified": False,
+            "text_layer_docx_path": self.text_layer_docx_path,
         }
 
 

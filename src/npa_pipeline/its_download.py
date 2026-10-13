@@ -21,6 +21,7 @@ from npa_pipeline.download import IntegrityError, unique_path, verify_pdf
 from npa_pipeline.http_client import NetworkError
 from npa_pipeline.its import ItsCache, _is_word_variant
 from npa_pipeline.models import ItsFileResult, ItsResult, Status
+from npa_pipeline.text_layer_docx import extract_text_layer_to_docx, has_full_text_layer
 
 _WIN_FORBIDDEN = '<>:"/\\|?*'
 _SPACES = re.compile(r"\s+")
@@ -65,6 +66,23 @@ def _effective_role(role: str, kind: str, *, from_word_card: bool, caption: str 
         if role == "document":
             return "document_word"
     return role
+
+
+def _attach_text_layer_docx(pdf_path: Path) -> str | None:
+    """Если PDF не скан (текстовый слой есть на всех страницах) — механически
+    извлекает текст в .docx того же stem (см. npa_pipeline.text_layer_docx). ИТС
+    структурно не ищутся в EBPI (нет eoNumber) — это не fallback после EBPI, как у
+    НПА (npa_pipeline.service), а единственный путь получить .docx без OCR. Скан
+    или любой сбой — None, молча, без исключения."""
+    try:
+        if not has_full_text_layer(pdf_path):
+            return None
+        docx_path = pdf_path.with_suffix(".docx")
+        if not docx_path.is_file():
+            extract_text_layer_to_docx(pdf_path, docx_path)
+        return str(docx_path)
+    except Exception:
+        return None
 
 
 def already_downloaded_its(cache: ItsCache, file_id: int) -> Path | None:
@@ -242,6 +260,7 @@ def fetch_its_by_url_id(
                     caption=caption,
                     order_number_caption=f.get("order_number_caption"),
                     order_date_caption=f.get("order_date_caption"),
+                    text_layer_docx_path=_attach_text_layer_docx(existing) if kind == "pdf" else None,
                 )
             )
         else:
@@ -306,6 +325,7 @@ def fetch_its_by_url_id(
                 caption=caption,
                 order_number_caption=f.get("order_number_caption"),
                 order_date_caption=f.get("order_date_caption"),
+                text_layer_docx_path=_attach_text_layer_docx(path) if kind == "pdf" else None,
             )
         )
 

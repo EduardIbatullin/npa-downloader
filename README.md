@@ -98,6 +98,7 @@ print(result.eo_number)
 print(result.pdf_path)        # путь к PDF при download=True — скачивается в любом случае
 print(result.ebpi_docx_path)  # текст из EBPI (см. ниже) в .docx рядом с PDF, если документ там есть
 print(result.ebpi_docstate)   # напр. «Действует без изменений» / «Действует с изменениями»
+print(result.text_layer_docx_path)  # запасной .docx, если EBPI не покрыл, но PDF не скан (см. ниже)
 print(result.to_dict())       # JSON-совместимый dict
 ```
 
@@ -142,6 +143,13 @@ query = parsed.to_query()
 (`relation_type='amends'`). Подробности — [`docs/ebpi-coverage.md`](docs/ebpi-coverage.md).
 Отключить: `fetch_document(..., fetch_ebpi_text=False)`.
 
+Если EBPI документ не покрыл (обычно приказ), но его PDF не скан — текстовый слой
+есть на всех страницах — `fetch_document()` сам извлекает текст механически
+(`pypdf`, без OCR и без ИИ) в `.docx` того же имени и кладёт путь в
+`result.text_layer_docx_path`; `ebpi_docx_path` при этом остаётся `None`. Для
+настоящих сканов (хоть одна страница без текстового слоя) это поле тоже `None` —
+там нужен OCR (см. ниже). Отключить: `fetch_document(..., fetch_text_layer_fallback=False)`.
+
 Алгоритм поиска (резолвинг органа, фильтр по дате, коллизии номеров, совместные приказы) — в [`docs/stage1-plan.md`](docs/stage1-plan.md). Поведение API портала — в [`docs/api-reference.md`](docs/api-reference.md).
 
 ### ИТС/НДТ — `fetch_its`
@@ -176,6 +184,7 @@ with burondt.create_burondt_client() as client:
 print(result.status, result.designation, result.url_id)
 for f in result.files:
     print(f.role, f.file_id, f.pdf_path)
+    print(f.text_layer_docx_path)  # .docx, если этот PDF не скан (см. ниже)
     # role: document | document_word | order | unknown
 ```
 
@@ -186,6 +195,15 @@ for f in result.files:
 - `ИТС 53` — все версии номера, новые сначала → часто `ambiguous`
 
 Если на burondt.ru есть парная карточка «в формате Word», при скачивании PDF-версии Word подтягивается рядом (`document_word`). Word есть не у всех ИТС.
+
+У ИТС нет `eoNumber`, поэтому EBPI для них в принципе не применим — но справочники
+(в отличие от приказов на publication.pravo.gov.ru, которые почти всегда сканы)
+обычно не скан, с полным текстовым слоем. Поэтому для каждого скачанного PDF
+`fetch_its()`/`fetch_its_by_url_id()` автоматически пробует механически извлечь
+текст (без OCR, см. `text_layer_docx_path` выше) — тот же `text_layer_docx.py`, что
+у НПА (см. раздел «НПА» выше). Для сканов (например, у самого приказа об
+утверждении ИТС — его подпись и печать почти всегда отсканированы) поле остаётся
+`None`, это не ошибка.
 
 Обновление кэша:
 
@@ -316,6 +334,7 @@ src/npa_pipeline/     # библиотека
   its.py / its_download.py / burondt.py
   ebpi.py             # клиент к actual.pravo.gov.ru — текст действующей редакции
   ebpi_docx.py        # HTML EBPI -> .docx
+  text_layer_docx.py  # запасной путь: текстовый слой PDF -> .docx без OCR
   webapp.py + static/ # тестовый UI
   cli.py
   ocr_jobs.py         # фоновое задание веб-UI: запускает npa-ocr отдельным процессом

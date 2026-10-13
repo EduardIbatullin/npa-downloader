@@ -15,6 +15,7 @@ from npa_pipeline.ebpi_docx import convert_redtext_to_docx
 from npa_pipeline.http_client import NetworkError, create_client
 from npa_pipeline.models import DocItem, Query, Result, Status, parse_user_date
 from npa_pipeline.search import search_document
+from npa_pipeline.text_layer_docx import extract_text_layer_to_docx, has_full_text_layer
 
 
 def _persist_search_hits(
@@ -149,6 +150,31 @@ def _record_amending_act(store: DocumentStore, *, target_eo: str, act: "ebpi.Ame
         pass
 
 
+def _attach_text_layer_docx(result: Result) -> Result:
+    """Резервный путь, когда EBPI не дал текста: если PDF не скан (текстовый слой
+    есть на всех страницах), механически извлекает текст в .docx того же stem, что
+    у PDF (см. npa_pipeline.text_layer_docx) — без OCR, он здесь не нужен.
+
+    Не трогает уже заполненный EBPI-результат (ebpi_docx_path) — EBPI даёт выверенный
+    текст с таблицами, механическое извлечение хуже и применяется только как fallback.
+    Для сканов (хоть одна страница без текстового слоя) не делает ничего — это
+    задача внешнего npa-ocr (см. docs/ocr-integration.md). Любой сбой (повреждённый
+    PDF, ошибка записи) не портит уже успешный результат с PDF."""
+    if result.ebpi_docx_path is not None:
+        return result
+    assert result.pdf_path is not None
+    try:
+        if not has_full_text_layer(result.pdf_path):
+            return result  # скан — работа OCR, не механического извлечения
+        docx_path = Path(result.pdf_path).with_suffix(".docx")
+        if not docx_path.is_file():
+            extract_text_layer_to_docx(result.pdf_path, docx_path)
+        result.text_layer_docx_path = str(docx_path)
+    except Exception:
+        pass
+    return result
+
+
 def fetch_document(
     query: Query,
     *,
@@ -161,17 +187,21 @@ def fetch_document(
     out_dir: str | Path = "downloads",
     download: bool = True,
     fetch_ebpi_text: bool = True,
+    fetch_text_layer_fallback: bool = True,
 ) -> Result:
     """Ищет документ, сохраняет в БД, скачивает PDF и при успехе пробует найти
-    текст в EBPI (actual.pravo.gov.ru — независимый от скана, с таблицами; есть не
-    у всех видов актов, см. npa_pipeline.ebpi). Порядок: PDF — в любом случае;
-    EBPI — если PDF скачан и документ там покрыт; OCR сюда не входит, это внешний
-    инструмент (см. docs/ocr-integration.md), вызывается отдельно, когда
-    ebpi_docx_path не заполнился.
+    текст: сначала в EBPI (actual.pravo.gov.ru — выверенный текст с таблицами; есть
+    не у всех видов актов, см. npa_pipeline.ebpi), а если EBPI не покрыл документ, но
+    PDF не скан (текстовый слой есть на всех страницах) — механически извлекает
+    текст сам (см. npa_pipeline.text_layer_docx, без OCR). Порядок: PDF — в любом
+    случае; EBPI — если PDF скачан; механическое извлечение — если EBPI не дал
+    текста. OCR сюда не входит, это внешний инструмент (см. docs/ocr-integration.md)
+    для настоящих сканов — вызывается отдельно, когда ни ebpi_docx_path, ни
+    text_layer_docx_path не заполнились.
 
     Все сетевые/целостностные исключения превращаются в статусы контракта. Сбой
-    именно EBPI-шага не портит результат — он не обязателен для успеха (см.
-    _attach_ebpi_text).
+    EBPI- или текстового шага не портит результат — ни один не обязателен для
+    успеха (см. _attach_ebpi_text, _attach_text_layer_docx).
     """
     owns_client = client is None
     owns_ebpi_client = ebpi_client is None
@@ -206,6 +236,8 @@ def fetch_document(
             result.pdf_path = str(file_path)
             if fetch_ebpi_text and ebpi_client is not None:
                 result = _attach_ebpi_text(ebpi_client, store, result)
+            if fetch_text_layer_fallback:
+                result = _attach_text_layer_docx(result)
             return result
         except IntegrityError as exc:
             return Result(

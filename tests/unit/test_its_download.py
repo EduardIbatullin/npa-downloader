@@ -246,3 +246,64 @@ def test_fetch_its_by_url_id_bypasses_resolve(tmp_path: Path):
     assert result.url_id == 1640
     assert len(result.files) == 2
     assert all(Path(f.pdf_path).is_file() for f in result.files)
+
+
+def _text_pdf_bytes(text: str) -> bytes:
+    """PDF с полноценным текстовым слоем (не скан) — см. test_text_layer_docx.py."""
+    stream = f"BT /F1 12 Tf 10 150 Td ({text}) Tj ET"
+    return (
+        "%PDF-1.4\n"
+        "1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n"
+        "2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n"
+        "3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+        "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>endobj\n"
+        "4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n"
+        f"5 0 obj<< /Length {len(stream)} >>\nstream\n{stream}\nendstream\nendobj\n"
+        "trailer<< /Size 6 /Root 1 0 R >>\n"
+        "startxref\n0\n%%EOF\n"
+    ).encode("latin-1")
+
+
+def test_fetch_its_attaches_text_layer_docx_for_text_pdf_only(tmp_path: Path):
+    """Справочник (file_id 2190) не скан — получает .docx; приказ (2504) скан —
+    не получает (см. npa_pipeline.its_download._attach_text_layer_docx)."""
+    cache = _seeded_cache(tmp_path)
+    text_pdf = _text_pdf_bytes("Document has enough text content to pass the threshold")
+    scan_pdf = _minimal_pdf()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_id = request.url.params.get("UrlId")
+        data = text_pdf if url_id == "2190" else scan_pdf
+        return httpx.Response(200, content=data, headers={"Content-Disposition": 'attachment; filename="file.pdf"'})
+
+    with create_client(base_url=burondt.BURONDT_BASE_URL, transport=httpx.MockTransport(handler)) as client:
+        result = fetch_its(client, designation="ИТС 28-2021", out_dir=tmp_path / "out", cache=cache)
+
+    assert result.status == Status.FOUND
+    document = next(f for f in result.files if f.role == "document")
+    order = next(f for f in result.files if f.role == "order")
+
+    assert document.text_layer_docx_path is not None
+    assert Path(document.text_layer_docx_path).is_file()
+    assert order.text_layer_docx_path is None  # скан — задача OCR, не извлечения
+
+
+def test_fetch_its_second_call_reuses_existing_file_still_has_docx(tmp_path: Path):
+    """Ветка already_downloaded_its (файл уже на диске) тоже прикрепляет .docx."""
+    cache = _seeded_cache(tmp_path)
+    text_pdf = _text_pdf_bytes("Document has enough text content to pass the threshold")
+    scan_pdf = _minimal_pdf()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_id = request.url.params.get("UrlId")
+        data = text_pdf if url_id == "2190" else scan_pdf
+        return httpx.Response(200, content=data, headers={"Content-Disposition": 'attachment; filename="file.pdf"'})
+
+    with create_client(base_url=burondt.BURONDT_BASE_URL, transport=httpx.MockTransport(handler)) as client:
+        first = fetch_its(client, designation="ИТС 28-2021", out_dir=tmp_path / "out", cache=cache)
+        second = fetch_its(client, designation="ИТС 28-2021", out_dir=tmp_path / "out", cache=cache)
+
+    first_doc = next(f for f in first.files if f.role == "document")
+    second_doc = next(f for f in second.files if f.role == "document")
+    assert first_doc.text_layer_docx_path is not None
+    assert second_doc.text_layer_docx_path == first_doc.text_layer_docx_path
