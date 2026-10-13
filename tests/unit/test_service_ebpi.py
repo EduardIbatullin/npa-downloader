@@ -363,3 +363,49 @@ def test_amending_act_recorded_in_document_relations(tmp_path: Path):
     amending_row = store.get_document_row(AMENDING_EO)
     assert amending_row is not None
     assert amending_row["number"] == "1221"
+
+
+def test_stale_negative_cache_retries_network(tmp_path: Path):
+    """covered=0 старше NEGATIVE_CACHE_TTL_DAYS — EBPI пробуется повторно, а не
+    навсегда доверяет старому «не покрыт» (решение 2026-10-13, задержка индексации)."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    db = tmp_path / "npa.db"
+    cache = AuthorityCache(db)
+    _seed_authority(db)
+
+    pravo_client1 = create_client(transport=httpx.MockTransport(_pravo_handler))
+    ebpi_client1 = ebpi.create_ebpi_client(transport=httpx.MockTransport(_ebpi_handler_not_found))
+    first = fetch_document(
+        Query(eo_number=EO),
+        client=pravo_client1,
+        ebpi_client=ebpi_client1,
+        cache=cache,
+        store=DocumentStore(db),
+        out_dir=tmp_path / "downloads",
+    )
+    assert first.ebpi_docx_path is None
+
+    stale = (datetime.now(timezone.utc) - timedelta(days=22)).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE document_ebpi SET checked_at = ? WHERE eo_number = ?", (stale, EO))
+        conn.commit()
+
+    pravo_client2 = create_client(transport=httpx.MockTransport(_pravo_handler))
+    ebpi_client2 = ebpi.create_ebpi_client(transport=httpx.MockTransport(_ebpi_handler_found))
+    second = fetch_document(
+        Query(eo_number=EO),
+        client=pravo_client2,
+        ebpi_client=ebpi_client2,
+        cache=cache,
+        store=DocumentStore(db),
+        out_dir=tmp_path / "downloads",
+    )
+    assert second.ebpi_docx_path is not None  # TTL истёк -> сеть дёрнули заново, документ нашёлся
+
+
+def test_fresh_negative_cache_still_skips_network_within_ttl(tmp_path: Path):
+    first, second = _fetch_twice(tmp_path, _ebpi_handler_not_found, _exploding_handler)
+    assert first.ebpi_docx_path is None
+    assert second.ebpi_docx_path is None  # checked_at только что создан — внутри TTL, сеть не дёрнули

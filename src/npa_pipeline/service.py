@@ -52,11 +52,15 @@ def _persist_search_hits(
 def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: Result) -> Result:
     """Пробует найти документ в EBPI и сохранить его текст рядом с уже скачанным PDF.
 
-    Сначала смотрит кэш в БД (document_ebpi) — в сеть идёт только если записи нет
-    или сохранённый .docx пропал с диска. Кэшируется и отрицательный результат
-    (документ не покрыт EBPI — так для большинства приказов, см. npa_pipeline.ebpi):
-    иначе каждый повторный fetch_document бил бы в сеть заново за уже известным
-    «нет».
+    Сначала смотрит кэш в БД (document_ebpi) — в сеть идёт только если записи нет,
+    сохранённый .docx пропал с диска, или отрицательный результат устарел. Кэшируется
+    и отрицательный результат (документ не покрыт EBPI — так для большинства
+    приказов, см. npa_pipeline.ebpi): иначе каждый повторный fetch_document бил бы в
+    сеть заново за уже известным «нет». У отрицательного результата TTL
+    (ebpi.NEGATIVE_CACHE_TTL_DAYS, сейчас 21 день) — EBPI индексирует свежие
+    документы не мгновенно (см. docs/ebpi-coverage.md, «Задержка индексации»), и без
+    TTL документ, скачанный в день публикации, мог бы навсегда остаться помеченным
+    «не покрыт», даже когда EBPI его позже проиндексирует.
 
     Молчаливо не меняет result, если документ не покрыт EBPI или что-то пошло не
     так (сеть, неожиданный HTML) — отсутствие «ворда» не должно портить уже
@@ -70,12 +74,16 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
     cached = store.get_ebpi(eo_number)
     if cached is not None:
         if not cached.covered:
-            return result  # уже проверяли — EBPI этот документ не покрывает
-        if cached.docx_path and Path(cached.docx_path).is_file():
+            if not ebpi.is_negative_cache_expired(cached.checked_at):
+                return result  # проверяли недавно — EBPI этот документ не покрывает
+            # TTL истёк — пробуем сеть ещё раз: документ мог появиться в EBPI с
+            # опозданием (см. docs/ebpi-coverage.md, «Задержка индексации»), не
+            # предполагаем «не покрыт» навсегда
+        elif cached.docx_path and Path(cached.docx_path).is_file():
             result.ebpi_docx_path = cached.docx_path
             result.ebpi_docstate = cached.docstate
             return result
-        # запись есть, но файла на диске нет (удалили/перенесли) — перекачаем
+        # covered, но файла на диске нет (удалили/перенесли) — перекачаем
 
     try:
         doc = ebpi.fetch_ebpi_document(ebpi_client, eo_number)

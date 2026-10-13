@@ -252,3 +252,16 @@ def test_fetch_redtext_missing_field_returns_none():
     with client:
         text = ebpi.fetch_redtext(client, 1)
     assert text is None
+
+
+def test_is_negative_cache_expired():
+    from datetime import datetime, timedelta, timezone
+
+    fresh = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat().replace("+00:00", "Z")
+    stale = (datetime.now(timezone.utc) - timedelta(days=22)).isoformat().replace("+00:00", "Z")
+    just_under = (datetime.now(timezone.utc) - timedelta(days=21) + timedelta(hours=1)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert ebpi.is_negative_cache_expired(fresh) is False
+    assert ebpi.is_negative_cache_expired(stale) is True
+    assert ebpi.is_negative_cache_expired(just_under) is False
