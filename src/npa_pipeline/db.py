@@ -511,6 +511,59 @@ class DocumentStore:
             checked_at=row["checked_at"],
         )
 
+    def record_relation(
+        self,
+        *,
+        source_eo: str,
+        relation_type: str,
+        target_eo: str | None = None,
+        target_ref_text: str | None = None,
+        effective_date: str | None = None,
+        origin: str,
+    ) -> None:
+        """Связь между документами (пока один вид — «source_eo изменяет target_eo»,
+        relation_type='amends', origin='ebpi', см. npa_pipeline.ebpi.resolve_amending_acts).
+        Оба документа должны уже существовать в documents (FK) — для акта-поправки,
+        которого мы отдельно не искали, это обычно минимальная запись через
+        upsert_from_doc_item на данных из самой карточки EBPI, не полная карточка
+        portal. Идемпотентно: повторный вызов с теми же source/type/target не
+        плодит дубли (в схеме нет unique-ограничения, проверяем вручную)."""
+        now = utc_now_iso()
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT 1 FROM document_relations
+                WHERE source_eo = ? AND relation_type = ? AND target_eo IS ?
+                """,
+                (source_eo, relation_type, target_eo),
+            ).fetchone()
+            if existing:
+                return
+            conn.execute(
+                """
+                INSERT INTO document_relations (
+                    source_eo, relation_type, target_eo, target_ref_text,
+                    effective_date, origin, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (source_eo, relation_type, target_eo, target_ref_text, effective_date, origin, now),
+            )
+            conn.commit()
+
+    def get_relations_for_target(self, target_eo: str) -> list[dict[str, Any]]:
+        """Чем изменён данный документ — источники (source_eo), у которых
+        target_eo == данному, отсортированы по дате вступления в силу."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM document_relations
+                WHERE target_eo = ?
+                ORDER BY effective_date
+                """,
+                (target_eo,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_document_row(self, eo_number: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(

@@ -136,7 +136,10 @@ query = parsed.to_query()
 высших судов и Банка России — ведомственные приказы нет; `ebpi_docx_path` тогда
 остаётся `None`, это не ошибка. Результат кэшируется в БД (включая отрицательный
 — «не покрыт»), повторный `fetch_document()` на том же документе не ходит в сеть
-за EBPI заново. Подробности — [`docs/ebpi-coverage.md`](docs/ebpi-coverage.md).
+за EBPI заново. Для изменённого документа PDF (исходная публикация) и `.docx`
+(действующая редакция) — не одно и то же: имя `.docx` тогда получает суффикс
+«(ред. от DD.MM.YYYY)», а акт-поправка записывается в `document_relations`
+(`relation_type='amends'`). Подробности — [`docs/ebpi-coverage.md`](docs/ebpi-coverage.md).
 Отключить: `fetch_document(..., fetch_ebpi_text=False)`.
 
 Алгоритм поиска (резолвинг органа, фильтр по дате, коллизии номеров, совместные приказы) — в [`docs/stage1-plan.md`](docs/stage1-plan.md). Поведение API портала — в [`docs/api-reference.md`](docs/api-reference.md).

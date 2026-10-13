@@ -95,6 +95,48 @@ def _ebpi_handler_not_found(request: httpx.Request) -> httpx.Response:
     return httpx.Response(404)
 
 
+AMENDING_DOCID = 333140
+AMENDING_EO = "0001202609230028"
+
+
+def _ebpi_handler_amended(request: httpx.Request) -> httpx.Response:
+    path = request.url.path
+    if path == "/api/ebpi/card/":
+        import json as _json
+
+        parsed = _json.loads(request.url.params.get("t"))
+        if parsed.get("docid") == AMENDING_DOCID:
+            return httpx.Response(
+                200,
+                json={
+                    "docid": AMENDING_DOCID,
+                    "docstate": "Действует без изменений",
+                    "docpassing": "Постановление Правительства Российской Федерации от 23.09.2026 № 1221",
+                    "docname": "О внесении изменения в постановление ... № 710",
+                    "docimagepath": f"http://publication.pravo.gov.ru/Document/View/{AMENDING_EO}",
+                    "adoptions": [{"onumber": "1221", "odate": "23.09.2026"}],
+                    "error": "",
+                },
+            )
+        return httpx.Response(200, json={"docid": 1, "docstate": "Действует с изменениями", "error": ""})
+    if path == "/api/ebpi/redactions/":
+        return httpx.Response(
+            200,
+            json={
+                "redactions": [
+                    {"redid": 497231, "reddocrefid": AMENDING_DOCID, "reddate": "20260923",
+                     "redinitial": False, "actual": True},
+                    {"redid": 473307, "reddocrefid": 0, "reddate": "20250901",
+                     "redinitial": True, "actual": False},
+                ],
+                "error": "",
+            },
+        )
+    if path == "/api/ebpi/redtext":
+        return httpx.Response(200, json={"redtext": "<html><body><p>Текст с поправками</p></body></html>"})
+    return httpx.Response(404)
+
+
 def _fetch(tmp_path: Path, ebpi_handler, **kwargs) -> Status:
     pravo_client = create_client(transport=httpx.MockTransport(_pravo_handler))
     ebpi_client = ebpi.create_ebpi_client(transport=httpx.MockTransport(ebpi_handler))
@@ -275,3 +317,49 @@ def test_refetches_when_cached_docx_file_was_deleted(tmp_path: Path):
     )
     assert second.ebpi_docx_path is not None
     assert Path(second.ebpi_docx_path).is_file()  # перекачали заново
+
+
+def test_amended_document_gets_labeled_docx_filename(tmp_path: Path):
+    result = _fetch(tmp_path, _ebpi_handler_amended)
+    assert result.ebpi_docx_path is not None
+    name = Path(result.ebpi_docx_path).name
+    assert "(ред. от 23.09.2026)" in name
+    assert Path(result.ebpi_docx_path).is_file()
+
+
+def test_unamended_document_docx_filename_has_no_label(tmp_path: Path):
+    result = _fetch(tmp_path, _ebpi_handler_found)
+    assert result.ebpi_docx_path is not None
+    assert "(ред." not in Path(result.ebpi_docx_path).name
+    assert Path(result.ebpi_docx_path).with_suffix("") == Path(result.pdf_path).with_suffix("")
+
+
+def test_amending_act_recorded_in_document_relations(tmp_path: Path):
+    db = tmp_path / "npa.db"
+    cache = AuthorityCache(db)
+    _seed_authority(db)
+    pravo_client = create_client(transport=httpx.MockTransport(_pravo_handler))
+    ebpi_client = ebpi.create_ebpi_client(transport=httpx.MockTransport(_ebpi_handler_amended))
+    store = DocumentStore(db)
+
+    result = fetch_document(
+        Query(eo_number=EO),
+        client=pravo_client,
+        ebpi_client=ebpi_client,
+        cache=cache,
+        store=store,
+        out_dir=tmp_path / "downloads",
+    )
+    assert result.ebpi_docx_path is not None
+
+    rows = store.get_relations_for_target(EO)
+    assert len(rows) == 1
+    assert rows[0]["source_eo"] == AMENDING_EO
+    assert rows[0]["relation_type"] == "amends"
+    assert rows[0]["effective_date"] == "20260923"
+    assert rows[0]["origin"] == "ebpi"
+
+    # сам акт-поправка тоже стал известным документом (минимальная запись)
+    amending_row = store.get_document_row(AMENDING_EO)
+    assert amending_row is not None
+    assert amending_row["number"] == "1221"

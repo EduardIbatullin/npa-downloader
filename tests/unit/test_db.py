@@ -183,3 +183,59 @@ def test_record_ebpi_unknown_document_raises(tmp_path: Path):
     store = DocumentStore(tmp_path / "npa.db")
     with pytest.raises(ValueError, match="не найден"):
         store.record_ebpi(eo_number="нет-такого", covered=False)
+
+
+def test_record_relation_and_read_back(tmp_path: Path):
+    store = DocumentStore(tmp_path / "npa.db")
+    card = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    target = store.upsert_from_card(card)
+
+    from datetime import date as date_cls
+    from npa_pipeline.models import DocItem
+
+    source = "0001202609230028"
+    store.upsert_from_doc_item(
+        DocItem(eo_number=source, number="1221", document_date=date_cls(2026, 9, 23), signatory_ids=[])
+    )
+    store.record_relation(
+        source_eo=source, relation_type="amends", target_eo=target,
+        effective_date="20260923", origin="ebpi",
+    )
+
+    rows = store.get_relations_for_target(target)
+    assert len(rows) == 1
+    assert rows[0]["source_eo"] == source
+    assert rows[0]["relation_type"] == "amends"
+    assert rows[0]["effective_date"] == "20260923"
+    assert rows[0]["origin"] == "ebpi"
+
+
+def test_record_relation_idempotent_no_duplicates(tmp_path: Path):
+    store = DocumentStore(tmp_path / "npa.db")
+    card = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    target = store.upsert_from_card(card)
+
+    from datetime import date as date_cls
+    from npa_pipeline.models import DocItem
+
+    source = "0001202609230028"
+    store.upsert_from_doc_item(
+        DocItem(eo_number=source, number="1221", document_date=date_cls(2026, 9, 23), signatory_ids=[])
+    )
+    for _ in range(3):
+        store.record_relation(
+            source_eo=source, relation_type="amends", target_eo=target,
+            effective_date="20260923", origin="ebpi",
+        )
+    assert len(store.get_relations_for_target(target)) == 1
+
+
+def test_record_relation_requires_known_documents(tmp_path: Path):
+    import pytest
+
+    store = DocumentStore(tmp_path / "npa.db")
+    with pytest.raises(Exception):
+        store.record_relation(
+            source_eo="нет-такого-источника", relation_type="amends",
+            target_eo="нет-такой-цели", origin="ebpi",
+        )

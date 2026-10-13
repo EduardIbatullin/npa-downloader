@@ -13,7 +13,7 @@ from npa_pipeline.db import DEFAULT_DB_PATH, DocumentStore
 from npa_pipeline.download import IntegrityError, download_document
 from npa_pipeline.ebpi_docx import convert_redtext_to_docx
 from npa_pipeline.http_client import NetworkError, create_client
-from npa_pipeline.models import DocItem, Query, Result, Status
+from npa_pipeline.models import DocItem, Query, Result, Status, parse_user_date
 from npa_pipeline.search import search_document
 
 
@@ -83,6 +83,12 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
             store.record_ebpi(eo_number=eo_number, covered=False)
             return result
         docx_path = Path(result.pdf_path).with_suffix(".docx")
+        if not doc.is_initial and doc.red_date:
+            # PDF — всегда исходная публикация; эта редакция — с поправками, не то
+            # же самое. Помечаем в имени файла, чтобы не выглядело как пара
+            # «один документ, два формата» (см. обсуждение 2026-10-12).
+            label = ebpi.format_red_date(doc.red_date)
+            docx_path = docx_path.with_name(f"{docx_path.stem} (ред. от {label}).docx")
         convert_redtext_to_docx(doc.html, docx_path)
         result.ebpi_docx_path = str(docx_path)
         result.ebpi_docstate = doc.docstate
@@ -95,6 +101,8 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
             red_date=doc.red_date,
             docx_path=docx_path,
         )
+        for act in doc.amending_acts:
+            _record_amending_act(store, target_eo=eo_number, act=act)
     except Exception:
         # Любой сбой здесь (сеть, неожиданная разметка) не должен портить уже
         # успешный результат — PDF скачан, этого достаточно для статуса FOUND.
@@ -102,6 +110,35 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
         # застрянем на «не покрыт» из-за временного сбоя сети.
         pass
     return result
+
+
+def _record_amending_act(store: DocumentStore, *, target_eo: str, act: "ebpi.AmendingAct") -> None:
+    """Пишет акт-поправку в documents (минимальная запись — не полная карточка
+    портала, см. упоминание FK в DocumentStore.record_relation) и саму связь
+    «изменяет» в document_relations. Сбой здесь не должен портить весь EBPI-шаг —
+    вызывающий код уже в try/except, но на случай будущего использования отдельно
+    обёрнуто ещё раз, чтобы один плохой акт-поправка не срывал запись остальных."""
+    try:
+        if act.date:
+            store.upsert_from_doc_item(
+                DocItem(
+                    eo_number=act.eo_number,
+                    number=act.number or "",
+                    document_date=parse_user_date(act.date),
+                    signatory_ids=[],
+                    name=act.name,
+                    complex_name=act.docpassing,
+                )
+            )
+        store.record_relation(
+            source_eo=act.eo_number,
+            relation_type="amends",
+            target_eo=target_eo,
+            effective_date=act.effective_date,
+            origin="ebpi",
+        )
+    except Exception:
+        pass
 
 
 def fetch_document(
