@@ -24,16 +24,40 @@ from npa_pipeline.ocr_jobs import count_scan_pages
 
 
 def has_full_text_layer(pdf_path: Path | str) -> bool:
-    """True, если у PDF есть хотя бы одна страница и ни одной без текстового слоя
-    (тот же порог, что у OCR — см. ocr_jobs.count_scan_pages/DEFAULT_MIN_PAGE_TEXT_CHARS).
-    False для пустого PDF или PDF со сканами — там нужен OCR, не это извлечение."""
+    """Проверяет, есть ли у PDF текстовый слой на всех страницах.
+
+    Использует тот же порог, что OCR (см.
+    ocr_jobs.count_scan_pages/DEFAULT_MIN_PAGE_TEXT_CHARS) — так что результат
+    согласован с тем, какие страницы npa-ocr посчитал бы сканами.
+
+    Args:
+        pdf_path: путь к PDF-файлу.
+
+    Returns:
+        True — документ не скан, extract_text_layer_to_docx даст полный текст.
+        False — пустой PDF или хотя бы одна страница без текстового слоя; тогда
+        нужен OCR (внешний npa-ocr, см. docs/ocr-integration.md), не это извлечение.
+    """
     total, scan = count_scan_pages(pdf_path)
     return total > 0 and scan == 0
 
 
 def extract_text_layer_to_docx(pdf_path: Path | str, out_path: Path | str) -> None:
-    """Построчно переносит текстовый слой каждой страницы PDF в .docx (разрыв
-    страницы между страницами PDF, пустые строки пропускаются)."""
+    """Извлекает текстовый слой PDF и сохраняет его как .docx.
+
+    Переносит текст постранично: внутри страницы — по одному абзацу на строку
+    (пустые строки пропускаются), между страницами PDF — разрыв страницы. Не
+    распознаёт структуру/таблицы (этим занимается EBPI, когда покрывает документ,
+    см. docs/ebpi-coverage.md) — только то, что уже лежит в текстовом слое PDF.
+
+    Args:
+        pdf_path: путь к исходному PDF. Предполагается, что has_full_text_layer()
+            уже вернул True для него — сама функция это не проверяет и не бросает
+            исключение, если в PDF встретится страница-скан, просто не добавит
+            для неё ни одного абзаца.
+        out_path: путь для .docx; родительская директория создаётся при
+            необходимости.
+    """
     reader = PdfReader(str(pdf_path))
     document = Document()
     last_index = len(reader.pages) - 1

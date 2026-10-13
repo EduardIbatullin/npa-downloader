@@ -1,7 +1,9 @@
-"""Скачивание и проверка файлов ИТС/НДТ. Переиспользует download.verify_pdf и
-атомарную запись (.part → replace), но со своим ключом (file_id, не eo_number) и
-своими таблицами (its_files/its_document_files) — карточка ИТС структурно
-несёт 1:N файлов, а не 1:1, как documents/document_files.
+"""Скачивание и проверка файлов ИТС/НДТ.
+
+Переиспользует download.verify_pdf и атомарную запись (.part → replace), но со
+своим ключом (file_id, не eo_number) и своими таблицами (its_files/
+its_document_files) — карточка ИТС структурно несёт 1:N файлов, а не 1:1, как
+documents/document_files.
 
 Если у того же обозначения есть карточка «в формате Word», её файлы тоже
 скачиваются и попадают в результат рядом с PDF (без проверки %PDF).
@@ -69,11 +71,18 @@ def _effective_role(role: str, kind: str, *, from_word_card: bool, caption: str 
 
 
 def _attach_text_layer_docx(pdf_path: Path) -> str | None:
-    """Если PDF не скан (текстовый слой есть на всех страницах) — механически
-    извлекает текст в .docx того же stem (см. npa_pipeline.text_layer_docx). ИТС
-    структурно не ищутся в EBPI (нет eoNumber) — это не fallback после EBPI, как у
-    НПА (npa_pipeline.service), а единственный путь получить .docx без OCR. Скан
-    или любой сбой — None, молча, без исключения."""
+    """Извлекает текст PDF в .docx того же stem, если PDF не скан.
+
+    ИТС структурно не ищутся в EBPI (нет eoNumber) — это не fallback после EBPI,
+    как у НПА (npa_pipeline.service), а единственный путь получить .docx без OCR
+    (см. npa_pipeline.text_layer_docx).
+
+    Returns:
+        Путь к .docx, либо None — PDF оказался сканом (текстовый слой отсутствует
+        хотя бы на одной странице) или произошёл любой сбой; оба случая не
+        различаются и не бросают исключение — отсутствие .docx не должно портить
+        уже успешный результат скачивания самого PDF.
+    """
     try:
         if not has_full_text_layer(pdf_path):
             return None
@@ -86,7 +95,16 @@ def _attach_text_layer_docx(pdf_path: Path) -> str | None:
 
 
 def already_downloaded_its(cache: ItsCache, file_id: int) -> Path | None:
-    """Если файл на месте и sha256 совпадает с БД — возвращает путь (аналог already_downloaded)."""
+    """Проверяет, скачан ли файл уже и совпадает ли его sha256 с записью в БД.
+
+    Аналог already_downloaded (download.py), но по file_id, а не eo_number.
+
+    Returns:
+        Путь к файлу, если он физически на диске и его sha256 совпадает с тем,
+        что записан в БД при скачивании. None — записи о файле нет, файл пропал
+        с диска, или его содержимое изменилось (sha256 не совпал); во всех трёх
+        случаях вызывающий код просто перекачивает файл заново.
+    """
     rec = cache.get_file_record(file_id)
     if rec is None:
         return None
@@ -113,7 +131,16 @@ def save_its_file(
     cache: ItsCache,
     suffix: str = ".pdf",
 ) -> Path:
-    """Атомарная запись (.part → replace), sha256, регистрация в its_document_files."""
+    """Сохраняет файл карточки ИТС на диск и регистрирует его в БД.
+
+    Атомарная запись (временный `.part` → `replace()`), sha256 от содержимого,
+    регистрация в its_document_files (см. ItsCache.record_file).
+
+    Args:
+        designation: обозначение ИТС — идёт в имя файла вместе с ролью (см.
+            _ROLE_LABEL), например «ИТС 28-2021 — приказ.pdf».
+        role: document | document_word | order | cancellation | unknown.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     out_dir = out_dir.resolve()
 
@@ -165,16 +192,24 @@ def fetch_its(
     cache: ItsCache,
     download: bool = True,
 ) -> ItsResult:
-    """Резолвит designation → url_id, скачивает и проверяет файлы карточки.
+    """Резолвит designation → url_id, скачивает и проверяет файлы карточки ИТС.
 
-    Никогда не бросает — сбои превращаются в ItsResult.status (переиспользует
-    общий Status: FOUND/NOT_FOUND/AMBIGUOUS/NETWORK_ERROR/INTEGRITY_ERROR).
+    Главная точка входа модуля. Никогда не бросает — сбои превращаются в
+    ItsResult.status (переиспользует общий Status: FOUND/NOT_FOUND/AMBIGUOUS/
+    NETWORK_ERROR/INTEGRITY_ERROR).
 
-    При AMBIGUOUS в каждый кандидат добавляется его список файлов (files) — чтобы
-    в UI можно было показать «справочник + приказ» и ссылку на скачивание конкретной
-    версии без ещё одного резолвинга по обозначению (см. fetch_its_by_url_id) — важно,
-    если у двух версий совпадает выводимое обозначение (например, обеим разрешат
-    показаться по общему номеру или году).
+    Args:
+        designation: обозначение ИТС, как ищет ItsCache.resolve (например
+            «ИТС 28-2021», «2021», «ИТС 53»).
+        download: False — только резолвинг, без скачивания файлов.
+
+    Returns:
+        ItsResult. При AMBIGUOUS в каждый кандидат (ItsResult.candidates) добавлен
+        его список файлов (files) — чтобы в UI можно было показать «справочник +
+        приказ» и ссылку на скачивание конкретной версии без ещё одного резолвинга
+        по обозначению (см. fetch_its_by_url_id) — важно, если у двух версий
+        совпадает выводимое обозначение (например, обеим разрешат показаться по
+        общему номеру или году).
     """
     if not designation or not designation.strip():
         return ItsResult(status=Status.INVALID_INPUT, designation=designation, message="Пустое обозначение")
@@ -228,7 +263,15 @@ def fetch_its_by_url_id(
     выбирает одну по её url_id, а не вводит обозначение заново (обозначение у версий
     может совпадать или быть неполным — см. resolve).
 
-    Дополнительно скачивает файлы связанных карточек того же ИТС (PDF + Word).
+    Args:
+        url_id: карточка ИТС, уже известная (например, из ItsResult.candidates).
+        designation: обозначение для ItsResult, если известно заранее — иначе
+            берётся из самой карточки.
+
+    Returns:
+        ItsResult.FOUND с files — включая файлы связанных карточек того же ИТС
+        (PDF + Word, см. ItsCache.find_related_url_ids), не только файлы url_id.
+        NOT_FOUND, если карточка url_id не найдена в кэше.
     """
     card_row = cache.get_card(url_id)
     if card_row is None:

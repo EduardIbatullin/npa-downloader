@@ -64,7 +64,22 @@ def search_documents(
     authority_id: str | None = None,
     page_size: int = PAGE_SIZE,
 ) -> list[DocItem]:
-    """Ищет документы с проходом по всем страницам (Index с 1)."""
+    """Ищет документы по номеру, проходя по всем страницам ответа (Index с 1).
+
+    Args:
+        number: номер документа для поиска.
+        search_type: режим сравнения номера (NumberSearchType) — 0 точное
+            совпадение, 1 начинается с, 2 заканчивается на, 3 содержит; все 4
+            режима проверены на реальных данных, см. docs/api-reference.md.
+        authority_id: GUID органа-подписанта. None — без фильтра: сервер ищет
+            по всей системе документов сразу, не только по одному органу
+            (подтверждено на реальных данных, см. docs/api-reference.md).
+        page_size: размер страницы ответа.
+
+    Returns:
+        Все найденные документы со всех страниц — не только первая (при
+        pagesTotalCount > 1 часть результатов иначе терялась бы молча).
+    """
     params: dict[str, Any] = {
         "Number": number,
         "NumberSearchType": search_type,
@@ -88,7 +103,12 @@ def search_documents(
 
 
 def get_document_card(client: httpx.Client, eo_number: str) -> dict[str, Any]:
-    """Сырая карточка /api/Document (для сохранения в БД)."""
+    """Возвращает сырую карточку /api/Document (для сохранения в БД).
+
+    Raises:
+        ValueError: ответ не похож на карточку документа (не словарь или нет
+            eoNumber).
+    """
     card = request_json(client, "GET", "/api/Document", params={"eoNumber": eo_number})
     if not isinstance(card, dict) or "eoNumber" not in card:
         raise ValueError(f"Некорректная карточка для {eo_number}")
@@ -112,7 +132,11 @@ def enrich_signatories(client: httpx.Client, items: list[DocItem]) -> list[DocIt
 
 
 def list_signatory_authorities(client: httpx.Client) -> list[dict[str, Any]]:
-    """Полный справочник органов (~3986 записей)."""
+    """Возвращает полный справочник органов (~3986 записей).
+
+    Raises:
+        ValueError: ответ /api/SignatoryAuthorities пришёл не списком.
+    """
     data = request_json(client, "GET", "/api/SignatoryAuthorities")
     if not isinstance(data, list):
         raise ValueError("Ожидался список от /api/SignatoryAuthorities")

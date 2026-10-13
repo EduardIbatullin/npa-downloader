@@ -154,8 +154,9 @@ class ItsFileResult:
             "pdf_path": self.pdf_path,
             "pages": self.pages,
             "caption": self.caption,
-            # Явная пометка: подпись карточки не авторитетна (подтверждённая опечатка
-            # на реальном примере — карточка «№835», реальный скан «№2326»).
+            # Подпись карточки burondt.ru не авторитетна — возможны неточности в
+            # номере/дате приказа (см. docs/stage1-plan.md, «Несоответствие номера
+            # утверждающего приказа»).
             "order_number_caption": self.order_number_caption,
             "order_date_caption": self.order_date_caption,
             "order_meta_verified": False,
@@ -205,4 +206,5 @@ def parse_user_date(value: str) -> date:
 
 
 def utc_now_iso() -> str:
+    """Текущее время в UTC как ISO 8601 строка с суффиксом Z (не +00:00)."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

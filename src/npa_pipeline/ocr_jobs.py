@@ -4,8 +4,9 @@ OCR живёт в отдельном проекте (npa-ocr, https://github.com
 и запускается здесь как внешний процесс — установленная команда `npa-ocr` (см. её
 README, раздел «Внешний контракт»), а не импорт модуля. Так тяжёлые модели (PaddleOCR,
 torch) не живут в процессе веб-сервера, а падение или остановка защитой памяти не
-роняет приложение. Одновременно выполняется не больше одного задания — на машине
-с 16 ГБ RAM параллельные прогоны уже приводили к нехватке памяти.
+роняет приложение. Одновременно выполняется не больше одного задания — параллельные
+прогоны моделей (PaddleOCR, torch) требовательны к памяти и при 16 ГБ RAM приводят
+к её нехватке.
 
 Команда `npa-ocr` должна быть на PATH того окружения, где запущен веб-сервер
 (`pip install npa-ocr[models]` в тот же venv, или отдельно и путь передан через
@@ -40,13 +41,20 @@ STEP_RE = re.compile(r"^\s*\[стр\.\s*\d+\]\s*(.+?):\s*([\d.]+)\s*(с|мин)"
 
 
 class JobBusyError(RuntimeError):
+    """Другое задание распознавания уже выполняется (разрешено только одно одновременно)."""
+
     def __init__(self, job_id: str) -> None:
         super().__init__(f"Уже выполняется распознавание (задание {job_id}). Дождитесь окончания.")
         self.job_id = job_id
 
 
 def count_scan_pages(pdf_path: Path | str) -> tuple[int, int]:
-    """(всего страниц, страниц без текстового слоя) — тем же порогом, что ocr_document."""
+    """Считает страницы PDF без текстового слоя — тем же порогом, что npa-ocr.
+
+    Returns:
+        (всего страниц, страниц без текстового слоя). Второй элемент 0 означает,
+        что документ не скан — текст уже есть на всех страницах, OCR не нужен.
+    """
     import pypdf
 
     reader = pypdf.PdfReader(str(pdf_path))
@@ -59,7 +67,14 @@ def count_scan_pages(pdf_path: Path | str) -> tuple[int, int]:
 
 
 def read_progress(progress_path: Path) -> dict:
-    """Последний прогресс и последние завершённые шаги из журнала дочернего процесса."""
+    """Читает журнал прогресса дочернего процесса npa-ocr и разбирает последние строки.
+
+    Returns:
+        dict с ключами percent/page/total/page_status (из последней строки вида
+        «[ x%] страница N из M: статус»; все None, если журнала ещё нет или строк
+        такого вида в нём не нашлось) и steps — до 6 последних завершённых шагов
+        (строки вида «[стр. N] шаг: время»).
+    """
     result = {"percent": None, "page": None, "total": None, "page_status": None, "steps": []}
     if not progress_path.is_file():
         return result
@@ -86,6 +101,8 @@ def read_progress(progress_path: Path) -> dict:
 
 @dataclass
 class OcrJob:
+    """Состояние одного фонового задания распознавания — то, что видит веб-UI."""
+
     job_id: str
     pdf_path: Path
     docx_path: Path
@@ -99,6 +116,7 @@ class OcrJob:
     error: str | None = None
 
     def to_dict(self) -> dict:
+        """Снимок состояния для JSON-ответа веб-API (/api/ocr/jobs/{job_id})."""
         progress = read_progress(self.progress_path)
         return {
             "job_id": self.job_id,
@@ -126,6 +144,17 @@ def _default_command(pdf_path: Path, docx_path: Path, authority_name: str | None
 
 
 class OcrJobManager:
+    """Запускает и отслеживает OCR-задания как внешние процессы npa-ocr.
+
+    Одновременно выполняется не больше одного задания (см. докстринг модуля) —
+    попытка запустить новое, пока предыдущее ещё running, бросает JobBusyError.
+
+    Args:
+        out_root: корень для выходных файлов; сами задания пишутся в out_root/ocr.
+        command_builder: как собрать команду запуска — по умолчанию настоящий
+            npa-ocr (_default_command), в тестах подменяется на фейковую команду.
+    """
+
     def __init__(
         self,
         out_root: Path,
@@ -142,6 +171,20 @@ class OcrJobManager:
         return self._jobs.get(job_id)
 
     def start(self, pdf_path: Path, *, authority_name: str | None = None) -> OcrJob:
+        """Запускает новое задание распознавания для pdf_path.
+
+        Args:
+            pdf_path: путь к PDF, который нужно распознать.
+            authority_name: передаётся в команду npa-ocr как --authority-name (если
+                задан) — помогает восстановить должность подписанта (см. npa-ocr).
+
+        Returns:
+            Созданный OcrJob (уже запущенный, status="running") — прогресс
+            отслеживается фоновым потоком (_watch), не этим вызовом.
+
+        Raises:
+            JobBusyError: уже выполняется другое задание.
+        """
         with self._lock:
             if self._current is not None and self._current.status == "running":
                 raise JobBusyError(self._current.job_id)
@@ -171,6 +214,11 @@ class OcrJobManager:
         return job
 
     def cancel(self, job: OcrJob) -> None:
+        """Останавливает задание, если оно ещё выполняется; иначе ничего не делает.
+
+        Уже сохранённые страницы (<stem>.pages) остаются на диске — повторный
+        запуск того же PDF продолжит с места остановки (см. докстринг модуля).
+        """
         with self._lock:
             if job.status != "running" or job.process is None:
                 return
@@ -178,6 +226,12 @@ class OcrJobManager:
             job.process.kill()
 
     def _watch(self, job: OcrJob) -> None:
+        """Ждёт завершения процесса задания и выставляет терминальный статус.
+
+        Работает в отдельном потоке (см. start). Не трогает статус, если задание
+        уже отменено (cancel уже выставил "cancelled") — не перезатирает его на
+        "failed" из-за ненулевого кода возврата после kill().
+        """
         code = job.process.wait()
         with self._lock:
             job.return_code = code
@@ -192,7 +246,12 @@ class OcrJobManager:
 
     @staticmethod
     def _failure_reason(job: OcrJob) -> str:
-        # CLI при нехватке памяти печатает JSON со статусом в stdout
+        """Человекочитаемая причина неудачи задания.
+
+        CLI npa-ocr при нехватке памяти печатает JSON со статусом в stdout — если
+        получилось его распарсить, возвращает это сообщение; иначе — обобщённый
+        текст с кодом возврата и ссылкой на журнал прогресса.
+        """
         try:
             out = json.loads(job.log_path.read_text(encoding="utf-8", errors="replace"))
             if out.get("status") == "insufficient_memory":

@@ -148,6 +148,8 @@ CREATE TABLE IF NOT EXISTS its_crawl_state (
 
 @dataclass
 class FileRecord:
+    """Запись о скачанном PDF — зеркало строки document_files."""
+
     eo_number: str
     file_path: str
     sha256: str
@@ -159,8 +161,11 @@ class FileRecord:
 
 @dataclass
 class EbpiRecord:
-    """Результат проверки документа в EBPI — в т.ч. отрицательный (covered=False),
-    чтобы не дёргать сеть повторно за уже известным «не покрыт», см. npa_pipeline.ebpi."""
+    """Результат проверки документа в EBPI — зеркало строки document_ebpi.
+
+    Кэшируется и отрицательный результат (covered=False), чтобы не дёргать сеть
+    повторно за уже известным «не покрыт», см. npa_pipeline.ebpi.
+    """
 
     eo_number: str
     covered: bool
@@ -184,6 +189,8 @@ def resolve_db_path(db_path: str | Path = DEFAULT_DB_PATH) -> Path:
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
+    """Открывает соединение с `PRAGMA foreign_keys = ON` — FK в SCHEMA реально
+    проверяются (не просто декларативны), см. record_file/record_ebpi/record_relation."""
     path = resolve_db_path(db_path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -192,6 +199,12 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
+    """Создаёт таблицы (CREATE TABLE IF NOT EXISTS) и докатывает старые базы.
+
+    Идемпотентно — безопасно вызывать на каждое открытие БД. Миграция ALTER TABLE
+    ниже нужна только для баз, созданных до того, как у authorities появилось
+    поле weight — на новых базах колонка уже есть из SCHEMA, ветка не сработает.
+    """
     conn.executescript(SCHEMA)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(authorities)")}
     if "weight" not in cols:
@@ -211,7 +224,19 @@ class DocumentStore:
         return connect(self.db_path)
 
     def upsert_from_card(self, card: dict[str, Any]) -> str:
-        """Сохраняет полную карточку /api/Document. Возвращает eoNumber."""
+        """Сохраняет полную карточку /api/Document (INSERT...ON CONFLICT DO UPDATE).
+
+        Полностью заменяет document_signatories документа (DELETE + INSERT), а не
+        дополняет — список подписантов в карточке портала всегда полный, слияние
+        со старым списком было бы неверным при его изменении между вызовами.
+
+        Returns:
+            eoNumber (card["eoNumber"]) — тот же, что был передан.
+
+        Raises:
+            ValueError: в карточке нет documentDate — без даты документ не
+                сохранить (document_date — NOT NULL в схеме).
+        """
         eo = card["eoNumber"]
         now = utc_now_iso()
         doc_date = parse_api_date(card.get("documentDate"))
@@ -322,7 +347,17 @@ class DocumentStore:
         return eo
 
     def upsert_from_doc_item(self, document: DocItem) -> str:
-        """Минимальная запись без полной карточки (импорт старых JSON)."""
+        """Пишет минимальную запись без полной карточки портала.
+
+        Используется там, где полной карточки нет и не предполагается (импорт
+        старых JSON-сайдкаров, минимальная запись акта-поправки из EBPI — см.
+        service._record_amending_act).
+
+        Returns:
+            document.eo_number. Если для этого eo_number уже есть полная карточка
+            (raw_card_json не пусто) — ничего не перезаписывает и просто
+            возвращает eo_number: урезанные данные не должны затирать полные.
+        """
         now = utc_now_iso()
         with self._connect() as conn:
             existing = conn.execute(
@@ -388,10 +423,16 @@ class DocumentStore:
         size_bytes: int,
         pages: int | None,
     ) -> FileRecord:
+        """Регистрирует скачанный PDF в document_files.
+
+        Raises:
+            ValueError: eo_number не найден в documents (FK) — карточка документа
+                должна быть сохранена (upsert_from_card/upsert_from_doc_item)
+                раньше, чем его файл.
+        """
         now = utc_now_iso()
         path_str = str(file_path)
         with self._connect() as conn:
-            # документ должен существовать (FK)
             exists = conn.execute(
                 "SELECT 1 FROM documents WHERE eo_number = ?",
                 (eo_number,),
@@ -426,6 +467,7 @@ class DocumentStore:
         )
 
     def get_file(self, eo_number: str) -> FileRecord | None:
+        """Возвращает запись о скачанном файле, либо None, если файл не скачивался."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM document_files WHERE eo_number = ?",
@@ -454,6 +496,15 @@ class DocumentStore:
         red_date: str | None = None,
         docx_path: str | Path | None = None,
     ) -> EbpiRecord:
+        """Кэширует результат проверки EBPI (включая отрицательный, covered=False).
+
+        См. npa_pipeline.ebpi и docs/ebpi-coverage.md «Кэш в БД» — без негативного
+        кэша каждый fetch_document() на непокрытом документе (большинство —
+        приказы) бил бы в сеть заново за уже известным «нет».
+
+        Raises:
+            ValueError: eo_number не найден в documents (FK) — как у record_file.
+        """
         now = utc_now_iso()
         path_str = str(docx_path) if docx_path is not None else None
         with self._connect() as conn:
@@ -493,6 +544,13 @@ class DocumentStore:
         )
 
     def get_ebpi(self, eo_number: str) -> EbpiRecord | None:
+        """Возвращает закэшированный результат проверки EBPI.
+
+        Returns:
+            EbpiRecord, либо None — документ ещё никогда не проверялся (не то же
+            самое, что covered=False, см. EbpiRecord.covered — это уже проверено
+            и не покрыто).
+        """
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM document_ebpi WHERE eo_number = ?",
@@ -521,13 +579,28 @@ class DocumentStore:
         effective_date: str | None = None,
         origin: str,
     ) -> None:
-        """Связь между документами (пока один вид — «source_eo изменяет target_eo»,
-        relation_type='amends', origin='ebpi', см. npa_pipeline.ebpi.resolve_amending_acts).
-        Оба документа должны уже существовать в documents (FK) — для акта-поправки,
-        которого мы отдельно не искали, это обычно минимальная запись через
-        upsert_from_doc_item на данных из самой карточки EBPI, не полная карточка
-        portal. Идемпотентно: повторный вызов с теми же source/type/target не
-        плодит дубли (в схеме нет unique-ограничения, проверяем вручную)."""
+        """Записывает связь между документами, идемпотентно.
+
+        Пока один вид связи — «source_eo изменяет target_eo» (relation_type=
+        'amends', origin='ebpi', см. npa_pipeline.ebpi.resolve_amending_acts).
+
+        Args:
+            source_eo: документ-источник связи. Должен уже существовать в
+                documents (FK) — для акта-поправки, которого мы отдельно не
+                искали на портале, это обычно минимальная запись через
+                upsert_from_doc_item на данных из карточки EBPI, не полная
+                карточка портала.
+            target_eo: документ-цель связи; тоже должен существовать (FK).
+
+        Повторный вызов с теми же source_eo/relation_type/target_eo не плодит
+        дубли — проверяем вручную перед INSERT, т.к. в схеме нет unique-ограничения
+        на эту комбинацию.
+
+        Raises:
+            sqlite3.IntegrityError: source_eo или target_eo не найдены в documents
+                (FK — проверяется только потому, что connect() включает
+                PRAGMA foreign_keys = ON).
+        """
         now = utc_now_iso()
         with self._connect() as conn:
             existing = conn.execute(
@@ -551,8 +624,13 @@ class DocumentStore:
             conn.commit()
 
     def get_relations_for_target(self, target_eo: str) -> list[dict[str, Any]]:
-        """Чем изменён данный документ — источники (source_eo), у которых
-        target_eo == данному, отсортированы по дате вступления в силу."""
+        """Возвращает связи, у которых target_eo == данному (чем изменён документ).
+
+        Returns:
+            Строки document_relations как словари, отсортированные по
+            effective_date (дате вступления в силу) — пустой список, если связей
+            нет.
+        """
         with self._connect() as conn:
             rows = conn.execute(
                 """

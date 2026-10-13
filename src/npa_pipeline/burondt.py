@@ -58,6 +58,8 @@ _CONTENT_DISPOSITION_FILENAME_RE = re.compile(r'filename="?([^";]+)"?')
 
 @dataclass
 class ItsCardFile:
+    """Один файл карточки burondt.ru (справочник, приказ или отмена)."""
+
     file_id: int
     caption: str
     role: str  # "document" | "order" | "unknown"
@@ -65,6 +67,8 @@ class ItsCardFile:
 
 @dataclass
 class ItsCard:
+    """Карточка ИТС/НДТ (или ГОСТа/протокола — отфильтровывается is_its)."""
+
     url_id: int
     designation: str
     title: str | None = None
@@ -95,12 +99,14 @@ def _classify_role(caption: str) -> str:
 
 
 def extract_order_meta(caption: str) -> tuple[str | None, str | None]:
-    """Best-effort извлечение № и даты приказа из текста подписи.
+    """Best-effort извлечение номера и даты приказа из текста подписи.
 
-    НЕ авторитетный источник — подпись карточки может содержать опечатку
-    (подтверждено: карточка ИТС 28-2021 называла приказ «№835», реальный
-    скан — «№2326»). Использовать только как order_*_caption, не как
-    проверенную цитату.
+    НЕ авторитетный источник — подпись карточки может содержать опечатку в номере
+    или дате (см. docs/stage1-plan.md, «Несоответствие номера утверждающего
+    приказа»). Использовать только как order_*_caption, не как проверенную цитату.
+
+    Returns:
+        (номер, дата) — любой из них None, если не нашлось в тексте подписи.
     """
     number_m = _ORDER_NUMBER_RE.search(caption)
     date_m = _ORDER_DATE_RE.search(caption)
@@ -111,7 +117,11 @@ def extract_order_meta(caption: str) -> tuple[str | None, str | None]:
 
 
 def parse_card(html: str, url_id: int) -> ItsCard | None:
-    """Разбирает карточку NDTDocsDetail.php. None — пустой слот (пропуск в диапазоне)."""
+    """Разбирает HTML карточки NDTDocsDetail.php в ItsCard.
+
+    Returns:
+        None — пустой слот (пропуск в диапазоне UrlId, не ошибка).
+    """
     designation_m = _DESIGNATION_RE.search(html)
     designation = designation_m.group(1).strip() if designation_m else ""
     if not designation:
@@ -146,10 +156,19 @@ def is_its(card: ItsCard) -> bool:
 def resolve_ambiguous_roles(
     files_with_bytes: list[tuple[ItsCardFile, bytes]]
 ) -> list[ItsCardFile]:
-    """Фолбэк, если по подписи роль не распознана: крупнейший файл — документ, меньшие — приказ.
+    """Фолбэк-роль по размеру файла, если подпись карточки её не определила.
 
-    На практике подпись почти всегда содержит «приказ» — этот путь для редких случаев,
-    когда _classify_role не сработал (например, нестандартная подпись).
+    На практике подпись почти всегда содержит «приказ» — этот путь для редких
+    случаев, когда _classify_role не сработал (например, нестандартная подпись).
+
+    Args:
+        files_with_bytes: файлы карточки вместе с их содержимым — размер в байтах
+            и есть сигнал для разделения: крупнейший файл считается справочником.
+
+    Returns:
+        Файлы с пересчитанной ролью: крупнейший — "document", остальные —
+        "order". Если файлов меньше двух, роль не трогается (бессмысленно считать
+        «крупнейший» среди одного).
     """
     if len(files_with_bytes) < 2:
         return [f for f, _ in files_with_bytes]
@@ -162,7 +181,12 @@ def resolve_ambiguous_roles(
 
 
 def download_file(client: httpx.Client, file_id: int) -> tuple[bytes, int | None, str | None]:
-    """GET NDTDocsFileDownload.php?UrlId=<file_id> — (bytes, Content-Length, имя файла)."""
+    """Скачивает файл карточки: GET NDTDocsFileDownload.php?UrlId=<file_id>.
+
+    Returns:
+        (содержимое файла, Content-Length из заголовков или None, имя файла из
+        Content-Disposition или None, если заголовка не было или не распарсился).
+    """
     data, content_length, headers = download_bytes(client, FILE_PATH, params={"UrlId": file_id})
     filename = None
     disposition = headers.get("Content-Disposition") if headers else None
@@ -181,8 +205,21 @@ def find_upper_bound(
     max_probe: int = 20_000,
     pause_seconds: float = BURONDT_PAGE_PAUSE_SECONDS,
 ) -> int:
-    """Идёт вперёд от from_url_id, пока не встретит confirm_empty_run пустых карточек
-    подряд; возвращает последний непустой url_id. Не хардкодит границу."""
+    """Находит верхнюю границу диапазона UrlId без хардкода константы.
+
+    Идёт вперёд от from_url_id, пока не встретит confirm_empty_run пустых карточек
+    подряд — такая серия надёжно отличает конец диапазона от единичных пропусков
+    внутри него (см. докстринг модуля).
+
+    Args:
+        from_url_id: с какого UrlId начинать обход вперёд.
+        confirm_empty_run: сколько пустых подряд считать концом диапазона.
+        max_probe: защита от бесконечного обхода, если диапазон никогда не кончится.
+        pause_seconds: пауза между запросами (вежливость к серверу).
+
+    Returns:
+        Последний непустой url_id, который встретили (не первый пустой после него).
+    """
     empty_run = 0
     last_non_empty = from_url_id - 1
     url_id = from_url_id
@@ -207,9 +244,12 @@ def iter_cards(
     hi: int,
     pause_seconds: float = BURONDT_PAGE_PAUSE_SECONDS,
 ) -> Iterator[tuple[int, ItsCard | None]]:
-    """Построчный обход [lo, hi] включительно, с паузой между запросами.
+    """Построчно обходит диапазон [lo, hi] включительно, с паузой между запросами.
 
     Единичные пропуски встречаются внутри диапазона — обход построчный, не с шагом.
+
+    Yields:
+        (url_id, карточка или None, если слот пустой) для каждого url_id в диапазоне.
     """
     for url_id in range(lo, hi + 1):
         html = fetch_card_html(client, url_id)

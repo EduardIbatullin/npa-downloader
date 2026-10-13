@@ -34,7 +34,20 @@ _LEFT_INDENT_PX = 45  # совпадает с margin-left в CSS redtext (см. 
 
 
 def convert_redtext_to_docx(html: str, out_path: Path) -> None:
-    """Собирает .docx из HTML redtext и сохраняет в out_path."""
+    """Собирает .docx из HTML redtext EBPI и сохраняет его в out_path.
+
+    Разметка (классы абзацев/ячеек, `<table>` rowspan/colspan) калибрована по трём
+    реальным документам — см. докстринг модуля; тег верхнего уровня вне `<p>`/
+    `<table>` молча пропускается, а не роняет сборку.
+
+    Args:
+        html: redtext, как его отдаёт EBPI (см. npa_pipeline.ebpi.fetch_redtext) —
+            HTML в стиле Word-экспорта, не настоящий .docx.
+        out_path: куда сохранить результат.
+
+    Raises:
+        ValueError: html не похож на redtext EBPI (нет тега `<body>`).
+    """
     soup = BeautifulSoup(html, "html.parser")
     body = soup.find("body")
     if body is None:

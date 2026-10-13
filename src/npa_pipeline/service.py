@@ -23,7 +23,10 @@ def _persist_search_hits(
     store: DocumentStore,
     result: Result,
 ) -> Result:
-    """Пишет found / ambiguous в БД (полная карточка). Обновляет DocItem из карточки."""
+    """Пишет found/ambiguous в БД (полная карточка).
+
+    Обновляет DocItem из карточки.
+    """
     docs: list[DocItem] = []
     if result.status == Status.FOUND and result.document is not None:
         docs = [result.document]
@@ -95,7 +98,8 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
         if not doc.is_initial and doc.red_date:
             # PDF — всегда исходная публикация; эта редакция — с поправками, не то
             # же самое. Помечаем в имени файла, чтобы не выглядело как пара
-            # «один документ, два формата» (см. обсуждение 2026-10-12).
+            # «один документ, два формата» (см. docs/ebpi-coverage.md,
+            # «PDF и DOCX — не одно и то же»).
             label = ebpi.format_red_date(doc.red_date)
             docx_path = docx_path.with_name(f"{docx_path.stem} (ред. от {label}).docx")
         convert_redtext_to_docx(doc.html, docx_path)
@@ -122,11 +126,13 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
 
 
 def _record_amending_act(store: DocumentStore, *, target_eo: str, act: "ebpi.AmendingAct") -> None:
-    """Пишет акт-поправку в documents (минимальная запись — не полная карточка
-    портала, см. упоминание FK в DocumentStore.record_relation) и саму связь
-    «изменяет» в document_relations. Сбой здесь не должен портить весь EBPI-шаг —
+    """Пишет акт-поправку в documents и связь «изменяет» в document_relations.
+
+    Запись в documents минимальна (не полная карточка портала, см. упоминание FK в
+    DocumentStore.record_relation). Сбой здесь не должен портить весь EBPI-шаг —
     вызывающий код уже в try/except, но на случай будущего использования отдельно
-    обёрнуто ещё раз, чтобы один плохой акт-поправка не срывал запись остальных."""
+    обёрнуто ещё раз, чтобы один плохой акт-поправка не срывал запись остальных.
+    """
     try:
         if act.date:
             store.upsert_from_doc_item(
@@ -189,19 +195,37 @@ def fetch_document(
     fetch_ebpi_text: bool = True,
     fetch_text_layer_fallback: bool = True,
 ) -> Result:
-    """Ищет документ, сохраняет в БД, скачивает PDF и при успехе пробует найти
-    текст: сначала в EBPI (actual.pravo.gov.ru — выверенный текст с таблицами; есть
-    не у всех видов актов, см. npa_pipeline.ebpi), а если EBPI не покрыл документ, но
-    PDF не скан (текстовый слой есть на всех страницах) — механически извлекает
-    текст сам (см. npa_pipeline.text_layer_docx, без OCR). Порядок: PDF — в любом
-    случае; EBPI — если PDF скачан; механическое извлечение — если EBPI не дал
-    текста. OCR сюда не входит, это внешний инструмент (см. docs/ocr-integration.md)
-    для настоящих сканов — вызывается отдельно, когда ни ebpi_docx_path, ни
-    text_layer_docx_path не заполнились.
+    """Ищет документ, скачивает PDF и пробует получить его текст без OCR.
 
-    Все сетевые/целостностные исключения превращаются в статусы контракта. Сбой
-    EBPI- или текстового шага не портит результат — ни один не обязателен для
-    успеха (см. _attach_ebpi_text, _attach_text_layer_docx).
+    Порядок: поиск и запись карточки в БД -> PDF, если download=True -> EBPI
+    (actual.pravo.gov.ru — выверенный текст с таблицами; покрывает не все виды
+    актов, см. npa_pipeline.ebpi) -> механическое извлечение текстового слоя
+    (npa_pipeline.text_layer_docx), если EBPI документ не покрыл, но PDF не скан.
+    OCR сюда не входит — это внешний инструмент (см. docs/ocr-integration.md),
+    вызывается отдельно, когда ни ebpi_docx_path, ни text_layer_docx_path не
+    заполнились.
+
+    Все сетевые/целостностные исключения превращаются в Result.status, а не
+    бросаются наружу. Сбой именно EBPI- или текстового шага не портит результат —
+    ни один не обязателен для успеха (см. _attach_ebpi_text, _attach_text_layer_docx).
+
+    Args:
+        query: что искать — реквизиты, eoNumber или разобранная цитата (см.
+            parse_citation.query_from_citation).
+        fetch_ebpi_text: False — пропустить шаг EBPI полностью.
+        fetch_text_layer_fallback: False — пропустить механическое извлечение
+            текстового слоя, даже если EBPI не покрыл документ.
+        client, ebpi_client, cache, store, cache_path, db_path, out_dir, download:
+            инфраструктурные параметры (HTTP-клиенты, пути к БД/файлам, кэши) —
+            при None создаются с дефолтами; их назначение видно из имени и типа,
+            здесь не повторяется.
+
+    Returns:
+        Result со статусом поиска/скачивания. При успехе: pdf_path заполнен всегда
+        (если download=True); ebpi_docx_path и text_layer_docx_path — независимо
+        друг от друга, в зависимости от того, какой текстовый шаг сработал (оба
+        могут остаться None одновременно — например, для скана, который EBPI не
+        покрыл, тогда нужен OCR отдельно).
     """
     owns_client = client is None
     owns_ebpi_client = ebpi_client is None

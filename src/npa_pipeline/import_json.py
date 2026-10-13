@@ -54,7 +54,18 @@ def import_json_sidecars(
     *,
     delete_json: bool = False,
 ) -> dict[str, int]:
-    """Переносит *.json из каталога загрузок в БД."""
+    """Переносит старые *.json sidecar-файлы из каталога загрузок в БД.
+
+    Args:
+        out_dir: каталог со старыми sidecar-файлами и PDF рядом с ними.
+        store: БД, куда переносятся карточки документов и записи о файлах.
+        delete_json: удалять ли *.json после успешного переноса (PDF не трогается).
+
+    Returns:
+        {"imported": N, "skipped": N, "deleted": N} — "skipped" объединяет
+        несколько разных причин (нечитаемый JSON, sidecar без eoNumber, не
+        нашёлся PDF рядом — см. _resolve_pdf), они не различаются в счётчике.
+    """
     out = Path(out_dir)
     imported = 0
     skipped = 0

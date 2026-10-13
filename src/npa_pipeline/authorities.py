@@ -45,7 +45,15 @@ class AuthorityCache:
         return connect(self.db_path)
 
     def build(self, client: httpx.Client) -> int:
-        """Загружает /api/SignatoryAuthorities и upsert'ит в кэш. Строки не удаляет."""
+        """Загружает /api/SignatoryAuthorities и upsert'ит записи в кэш.
+
+        Строки не удаляет — только добавляет/обновляет, так что орган, пропавший
+        из нового ответа портала, остаётся резолвимым по старым данным.
+
+        Returns:
+            Текущее общее число органов в кэше после upsert'а (не количество
+            изменённых за этот вызов строк).
+        """
         rows = pravo_api.list_signatory_authorities(client)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
         with self._connect() as conn:
@@ -79,7 +87,19 @@ class AuthorityCache:
         authority_guid: str | None = None,
         authority_name: str | None = None,
     ) -> list[str]:
-        """Возвращает набор кандидатов-GUID: 0, 1 или много."""
+        """Резолвит орган в набор кандидатов-GUID.
+
+        Args:
+            authority_guid: если задан, используется как есть, без обращения к
+                БД — authority_name в этом случае игнорируется.
+            authority_name: название органа для поиска по кэшу (нормализуется
+                через normalize_name). Пустая строка или None — пустой результат.
+
+        Returns:
+            Список GUID-кандидатов: пустой — орган не найден; из одного элемента
+            — точное совпадение по нормализованному названию; из нескольких —
+            точных совпадений не было, вернулись все частичные (LIKE) совпадения.
+        """
         if authority_guid:
             return [authority_guid]
 
@@ -103,7 +123,13 @@ class AuthorityCache:
             return [r["guid"] for r in partial]
 
     def suggest(self, query: str, *, limit: int = 15) -> list[dict[str, str]]:
-        """Автодополнение: федеральные органы выше региональных, затем префикс, затем длина."""
+        """Автодополнение по названию органа: федеральные выше региональных,
+        затем совпадение-префикс, затем короче название.
+
+        Returns:
+            До limit записей вида {"guid": ..., "name": ...}, в порядке
+            ранжирования выше. Пустой список для пустого query или limit < 1.
+        """
         needle = normalize_name(query)
         if not needle or limit < 1:
             return []

@@ -133,6 +133,15 @@ def _pack_its_files(files: list[dict]) -> list[dict]:
 
 
 def _lookup_its(*, designation: str | None = None, url_id: int | None = None) -> dict:
+    """Ищет и скачивает ИТС/НДТ, собирает ответ для проверочного UI.
+
+    Args:
+        designation: обозначение (см. ItsCache.resolve) — обязательно, если
+            url_id не передан.
+        url_id: конкретная карточка, если уже выбрана (например, после ambiguous
+            из первого запроса по designation) — резолвинг по designation
+            пропускается, см. fetch_its_by_url_id.
+    """
     cache = _its_cache()
     with burondt.create_burondt_client() as client:
         if url_id is not None:
@@ -202,7 +211,14 @@ def _authority_from_title(title: str | None) -> str | None:
 
 
 def _ocr_info(pdf_path: str | None, eo_number: str | None, title: str | None) -> dict | None:
-    """Есть ли у PDF страницы-сканы и можно ли запустить распознавание."""
+    """Считает страницы-сканы у PDF — для кнопки «Распознать скан» в UI.
+
+    Returns:
+        None, если pdf_path или eo_number не заданы (документ не найден/не
+        скачан — кнопке нечего показывать). Иначе — словарь со счётчиками страниц
+        и authority_name (см. _authority_from_title), который уходит в запрос
+        на запуск OCR.
+    """
     if not pdf_path or not eo_number:
         return None
     total, scan = count_scan_pages(pdf_path)
@@ -215,6 +231,14 @@ def _ocr_info(pdf_path: str | None, eo_number: str | None, title: str | None) ->
 
 
 def _lookup_npa(q: str) -> dict:
+    """Разбирает название НПА, ищет и скачивает документ, собирает ответ для UI.
+
+    Args:
+        q: название/реквизиты в произвольном виде — разбирается parse_citation.
+
+    Raises:
+        HTTPException: 400, если q не разобрался в реквизиты (см. parse_citation).
+    """
     try:
         parsed = parse_citation(q)
     except ValueError as exc:
@@ -423,13 +447,19 @@ def get_pdf(
     eo_number: str,
     download: bool = FastQuery(default=False),
 ) -> FileResponse:
+    """Отдаёт PDF по eoNumber; при download=1 пересобирает короткое имя файла.
+
+    Имя на диске может быть старым/длинным (например, если naming.py менялся
+    после того, как файл был скачан) — при скачивании через браузер пересобираем
+    его по текущим правилам (human_filename_stem), а не отдаём как есть, иначе
+    пользователь долго получал бы отличающиеся от актуального стиля имена.
+    """
     store = _store()
     path = find_pdf_by_eo(store, eo_number)
     if path is None:
         raise HTTPException(status_code=404, detail="PDF не найден на диске")
     filename = path.name
     if download:
-        # Короткое имя с аббревиатурами, даже если на диске файл со старым длинным именем.
         row = store.get_document_row(eo_number)
         if row is not None:
             from datetime import date as date_cls

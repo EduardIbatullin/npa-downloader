@@ -55,7 +55,13 @@ def request_json(
     *,
     params: dict[str, Any] | None = None,
 ) -> Any:
-    """GET/POST JSON с retry на обрывы и 5xx."""
+    """Выполняет GET/POST и возвращает разобранный JSON, с retry на обрывы и 5xx.
+
+    Raises:
+        NetworkError: после MAX_ATTEMPTS неудачных попыток (обрыв соединения,
+            таймаут, или код из RETRY_STATUSES) — не возвращает None, а именно
+            бросает исключение.
+    """
     last_exc: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -83,7 +89,12 @@ def request_text(
     *,
     params: dict[str, Any] | None = None,
 ) -> str:
-    """GET/POST текст (HTML) с тем же retry, что request_json."""
+    """Выполняет GET/POST и возвращает текст ответа (HTML), с тем же retry, что
+    request_json.
+
+    Raises:
+        NetworkError: после MAX_ATTEMPTS неудачных попыток — см. request_json.
+    """
     last_exc: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -110,7 +121,15 @@ def download_bytes(
     *,
     params: dict[str, Any] | None = None,
 ) -> tuple[bytes, int | None, httpx.Headers]:
-    """Скачивает тело ответа потоком; возвращает (данные, Content-Length или None, заголовки ответа)."""
+    """Скачивает тело ответа потоком (годится для крупных файлов, см. PDF_TIMEOUT).
+
+    Returns:
+        (данные, Content-Length из заголовка или None, заголовки ответа целиком —
+        нужны вызывающему коду, например, для Content-Disposition).
+
+    Raises:
+        NetworkError: после MAX_ATTEMPTS неудачных попыток — см. request_json.
+    """
     last_exc: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
         try:

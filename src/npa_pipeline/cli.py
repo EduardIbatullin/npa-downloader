@@ -20,6 +20,7 @@ from npa_pipeline.service import fetch_document
 
 
 def _query_from_args(args: argparse.Namespace) -> Query:
+    """Собирает Query из аргументов `fetch`: --title, затем --json, затем отдельные флаги."""
     if getattr(args, "title", None):
         return parse_citation(args.title).to_query()
     if args.json:
@@ -46,6 +47,7 @@ def _query_from_args(args: argparse.Namespace) -> Query:
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
+    """Обработчик `npa fetch` — печатает JSON результата, код возврата 0/1 по статусу."""
     try:
         query = _query_from_args(args)
     except ValueError as exc:
@@ -62,6 +64,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 
 def cmd_refresh_authorities(args: argparse.Namespace) -> int:
+    """Обработчик `npa refresh-authorities` — полный обход справочника органов."""
     cache = AuthorityCache(args.db)
     with create_client() as client:
         count = cache.build(client)
@@ -70,6 +73,7 @@ def cmd_refresh_authorities(args: argparse.Namespace) -> int:
 
 
 def cmd_refresh_its(args: argparse.Namespace) -> int:
+    """Обработчик `npa refresh-its` — обновляет кэш карточек ИТС/НДТ с burondt.ru."""
     cache = ItsCache(args.db)
     with burondt.create_burondt_client() as client:
         stats = cache.refresh(
@@ -83,6 +87,7 @@ def cmd_refresh_its(args: argparse.Namespace) -> int:
 
 
 def cmd_fetch_its(args: argparse.Namespace) -> int:
+    """Обработчик `npa fetch-its` — печатает JSON результата, код возврата 0/1 по статусу."""
     cache = ItsCache(args.db)
     with burondt.create_burondt_client() as client:
         result = fetch_its(
@@ -98,6 +103,7 @@ def cmd_fetch_its(args: argparse.Namespace) -> int:
 
 
 def cmd_import_json(args: argparse.Namespace) -> int:
+    """Обработчик `npa import-json` — переносит старые JSON-sidecar из downloads/ в БД."""
     store = DocumentStore(args.db)
     stats = import_json_sidecars(
         args.out_dir,
@@ -109,6 +115,7 @@ def cmd_import_json(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Собирает argparse-парсер со всеми подкомандами `npa`."""
     parser = argparse.ArgumentParser(prog="npa", description="Поиск и скачивание НПА")
     parser.add_argument(
         "--db",
@@ -183,9 +190,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fetch_its_cmd.set_defaults(func=cmd_fetch_its)
 
-    # Подкоманда `ocr` отсюда убрана 2026-10-12: OCR выделен в отдельный проект
-    # npa-ocr (https://github.com/EduardIbatullin/npa-ocr), своя команда `npa-ocr
-    # <pdf> [опции]`. Веб-UI запускает её как внешний процесс — см. ocr_jobs.py.
+    # Подкоманда `ocr` здесь отсутствует — OCR живёт в отдельном проекте npa-ocr
+    # (https://github.com/EduardIbatullin/npa-ocr, команда `npa-ocr <pdf> [опции]`,
+    # см. docs/ocr-integration.md). Веб-UI запускает её как внешний процесс, см.
+    # ocr_jobs.py.
 
     imp = sub.add_parser(
         "import-json",
@@ -203,6 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Точка входа CLI: парсит аргументы и завершается с кодом обработчика подкоманды."""
     parser = build_parser()
     args = parser.parse_args(argv)
     code = args.func(args)

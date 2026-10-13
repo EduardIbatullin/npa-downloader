@@ -48,7 +48,28 @@ def apply_filters(
     digit_boundary_prefix: str | None = None,
     doc_type_id: str | None = None,
 ) -> list[DocItem]:
-    """Фильтрация по дате, номеру, органу, типу + дедупликация по eoNumber."""
+    """Фильтрует кандидатов по дате, номеру, органу, типу; дедуплицирует по eoNumber.
+
+    Args:
+        items: исходный список документов (обычно сырой ответ поиска).
+        target_date: документы с другой датой подписания отсекаются.
+        candidates: GUID-ы органов-кандидатов — используется и для фильтра (если
+            filter_by_authority), и как множество для проверки пересечения с
+            item.signatory_ids.
+        filter_by_authority: True — оставить только документы, у которых
+            signatory_ids пересекаются с candidates; False — пропустить этот
+            фильтр (например, когда орган уже учтён на уровне запроса к API).
+        number_check: если задан — оставить только документы с этим номером
+            (сравнение через normalize.numbers_equal, не точное совпадение строк).
+        digit_boundary_prefix: если задан — оставить только документы, чей номер
+            начинается с этого цифрового префикса на границе разряда (запасной
+            поиск по цифровой части номера, см. normalize.matches_digit_boundary).
+        doc_type_id: если задан и у документа непустой document_type_id — должен
+            совпадать.
+
+    Returns:
+        Отфильтрованный список без дублей eoNumber, в исходном порядке.
+    """
     result: list[DocItem] = []
     seen: set[str] = set()
     candidate_set = set(candidates)
@@ -81,7 +102,14 @@ def decide(
     query_date: date,
     diagnostics: list[DiagnosticHit] | None = None,
 ) -> Result:
-    """Выбор статуса по числу совпадений (шаги 9–10)."""
+    """Выбирает статус результата по числу совпадений (шаги 9-10 плана этапа 1).
+
+    Returns:
+        Result: FOUND при ровно одном совпадении; AMBIGUOUS при нескольких
+        (все — в candidates); при нуле совпадений — OUT_OF_RANGE, если
+        query_date раньше охвата портала (COVERAGE_START), иначе NOT_FOUND
+        (с diagnostics, если переданы).
+    """
     if len(matched) == 1:
         return Result(
             status=Status.FOUND,
@@ -161,7 +189,30 @@ def search_document(
     query: Query,
     cache: AuthorityCache,
 ) -> Result:
-    """Полный алгоритм поиска без скачивания PDF."""
+    """Выполняет полный алгоритм поиска документа, без скачивания PDF.
+
+    Два уровня поиска (шаги плана этапа 1, см. docs/stage1-plan.md): сначала точный
+    номер (шаги 4-5), если нет совпадений — запасной поиск по цифровой части номера
+    (шаг 8, только если префикс достаточно длинный при нескольких органах-кандидатах
+    — иначе слишком широкий). Если орган резолвится в несколько GUID одновременно
+    (несовпадающих органов с похожим именем), фильтрация по подписанту идёт отдельным
+    проходом после подгрузки реквизитов (enrich_signatories), а не на уровне запроса
+    к API. При итоговом нулевом совпадении (шаг 11) собирается диагностика — что
+    нашлось по дате+номеру без фильтра по органу, чтобы объяснить пользователю,
+    почему документ не найден (не просто «ничего»), если сбор диагностики сам не
+    упадёт — тогда diagnostics просто останется пустым, status не меняется.
+
+    Args:
+        query: должен содержать либо eo_number, либо number+date+(authority_guid
+            или authority_name) — иначе возвращается INVALID_INPUT, см.
+            validate_query.
+        cache: резолвер органа в один или несколько GUID (см. AuthorityCache).
+
+    Returns:
+        Result. FOUND/AMBIGUOUS/NOT_FOUND/OUT_OF_RANGE — см. decide(); INVALID_INPUT
+        при невалидном query. Сетевые ошибки от client не перехватываются здесь —
+        это ответственность вызывающего кода (service.fetch_document).
+    """
     err = validate_query(query)
     if err:
         return Result(status=Status.INVALID_INPUT, message=err)
