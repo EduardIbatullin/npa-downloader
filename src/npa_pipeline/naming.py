@@ -147,6 +147,24 @@ def format_document_title(
     return number or ""
 
 
+def _sanitize_stem(raw: str, fallback: str) -> str:
+    """Общий хвост human_filename_stem*: сокращения, «№»→«N», даты, запрещённые
+    символы Windows, обрезка длины. fallback — если raw в итоге пустой."""
+    raw = abbreviate_authorities(raw)
+    raw = raw.replace("№", "N").replace("Nº", "N")
+    raw = _DATE_DOTS.sub(r"\1_\2_\3", raw)
+    raw = _SPACES.sub(" ", raw).strip()
+
+    for ch in _WIN_FORBIDDEN:
+        raw = raw.replace(ch, "_")
+    raw = raw.rstrip(" .")
+
+    if len(raw) > 180:
+        raw = raw[:180].rstrip(" .")
+
+    return raw or fallback
+
+
 def human_filename_stem(document: DocItem) -> str:
     """Строит имя файла вида «Приказ Минприроды России от 31_05_2019 N 691».
 
@@ -166,16 +184,21 @@ def human_filename_stem(document: DocItem) -> str:
         num = document.number or document.eo_number
         raw = f"Документ от {d} N {num}"
 
-    raw = abbreviate_authorities(raw)
-    raw = raw.replace("№", "N").replace("Nº", "N")
-    raw = _DATE_DOTS.sub(r"\1_\2_\3", raw)
-    raw = _SPACES.sub(" ", raw).strip()
+    return _sanitize_stem(raw, document.eo_number)
 
-    for ch in _WIN_FORBIDDEN:
-        raw = raw.replace(ch, "_")
-    raw = raw.rstrip(" .")
 
-    if len(raw) > 180:
-        raw = raw[:180].rstrip(" .")
+def human_filename_stem_from_text(raw_text: str | None, *, fallback: str) -> str:
+    """Та же сборка имени файла, что human_filename_stem, но из произвольной
+    строки реквизитов, а не из DocItem — для источников без eoNumber/complex_name
+    (например, ips.pravo.gov.ru, см. npa_pipeline.ips_pravo), где единственное,
+    что есть, — реквизиты одной строкой (adoption).
 
-    return raw or document.eo_number
+    Args:
+        raw_text: строка реквизитов (например «Федеральный закон от 10.01.2002
+            № 7-ФЗ»); если пустая/None — используется fallback без изменений.
+        fallback: возвращается, если raw_text пуст или сборка дала пустую строку.
+    """
+    raw = (raw_text or "").strip()
+    if not raw:
+        return fallback
+    return _sanitize_stem(raw, fallback)

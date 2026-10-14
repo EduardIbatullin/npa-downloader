@@ -10,6 +10,12 @@ from typing import Any
 
 class Status(str, Enum):
     FOUND = "found"
+    # Найден только через резерв ips.pravo.gov.ru для документов старше
+    # COVERAGE_START — есть текст (ips_docx_path), но pdf_path всегда None, PDF у
+    # таких документов структурно не существует. Отдельный статус, а не FOUND с
+    # pdf_path=None, — чтобы код, разбирающий Status, не предполагал тихо, что
+    # pdf_path есть всегда при FOUND (см. docs/ips-pravo-coverage.md).
+    FOUND_TEXT_ONLY = "found_text_only"
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous"
     OUT_OF_RANGE = "out_of_range"
@@ -113,6 +119,18 @@ class Result:
     # OCR и без распознавания структуры/таблиц, см. npa_pipeline.text_layer_docx.
     # None — EBPI уже дал текст, либо PDF — скан (там нужен OCR), либо сбой.
     text_layer_docx_path: str | None = None
+    # Резерв ips.pravo.gov.ru для документов старше COVERAGE_START (см.
+    # Status.FOUND_TEXT_ONLY и npa_pipeline.ips_pravo) — заполняются только при
+    # этом статусе. ips_candidates — отдельно от candidates: кандидаты оттуда не
+    # DocItem (нет eoNumber у большинства документов старше границы охвата), а
+    # лёгкие словари {"nd", "adoption", "docdate", "state", "publications"};
+    # заполняется при Status.AMBIGUOUS, когда несколько совпадений дал именно этот
+    # резерв (см. docs/ips-pravo-coverage.md, «Несколько совпадений»).
+    ips_nd: str | None = None
+    ips_docx_path: str | None = None
+    ips_state: str | None = None
+    ips_adoption: str | None = None
+    ips_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,6 +145,11 @@ class Result:
             "ebpi_docx_path": self.ebpi_docx_path,
             "ebpi_docstate": self.ebpi_docstate,
             "text_layer_docx_path": self.text_layer_docx_path,
+            "ips_nd": self.ips_nd,
+            "ips_docx_path": self.ips_docx_path,
+            "ips_state": self.ips_state,
+            "ips_adoption": self.ips_adoption,
+            "ips_candidates": list(self.ips_candidates),
         }
 
 

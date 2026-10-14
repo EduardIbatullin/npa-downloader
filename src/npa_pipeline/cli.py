@@ -60,7 +60,9 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         download=not args.no_download,
     )
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
-    return 0 if result.status.value == "found" else 1
+    # found_text_only — успех через резерв ips.pravo.gov.ru (нет PDF, но есть
+    # текст, см. npa_pipeline.ips_pravo), не ошибка наравне с not_found/ambiguous
+    return 0 if result.status.value in ("found", "found_text_only") else 1
 
 
 def cmd_refresh_authorities(args: argparse.Namespace) -> int:

@@ -8,12 +8,14 @@ import httpx
 
 from npa_pipeline import api as pravo_api
 from npa_pipeline import ebpi
+from npa_pipeline import ips_pravo
 from npa_pipeline.authorities import AuthorityCache
 from npa_pipeline.db import DEFAULT_DB_PATH, DocumentStore
-from npa_pipeline.download import IntegrityError, download_document
+from npa_pipeline.download import IntegrityError, download_document, unique_path
 from npa_pipeline.ebpi_docx import convert_redtext_to_docx
 from npa_pipeline.http_client import NetworkError, create_client
 from npa_pipeline.models import DocItem, Query, Result, Status, parse_user_date
+from npa_pipeline.naming import human_filename_stem_from_text
 from npa_pipeline.search import search_document
 from npa_pipeline.text_layer_docx import extract_text_layer_to_docx, has_full_text_layer
 
@@ -181,11 +183,74 @@ def _attach_text_layer_docx(result: Result) -> Result:
     return result
 
 
+def _try_ips_fallback(
+    ips_client: httpx.Client,
+    result: Result,
+    *,
+    query: Query,
+    out_dir: Path,
+) -> Result:
+    """Пробует найти документ через ips.pravo.gov.ru, когда он старше границы
+    охвата publication.pravo.gov.ru — единственная альтернатива для таких
+    документов, PDF у них в принципе не существует (см.
+    docs/ips-pravo-coverage.md).
+
+    Args:
+        result: уже вычисленный Status.OUT_OF_RANGE от основного поиска.
+        query: должен содержать number и date — иначе основной поиск не мог бы
+            прийти к out_of_range (см. search.search_document).
+
+    Returns:
+        Status.FOUND_TEXT_ONLY с текстом (ips_docx_path), если резерв нашёл ровно
+        одного кандидата и успешно получил текст; Status.AMBIGUOUS с
+        ips_candidates, если кандидатов несколько; иначе исходный result
+        (out_of_range) без изменений — ноль кандидатов, сбой сети или структуры
+        ответа трактуются одинаково, не как ошибка всего результата.
+    """
+    assert query.number is not None and query.date is not None
+    hits = ips_pravo.search_by_requisites(ips_client, number=query.number, doc_date=query.date)
+    if not hits:
+        return result
+    if len(hits) > 1:
+        return Result(
+            status=Status.AMBIGUOUS,
+            message=f"Найдено {len(hits)} документов на ips.pravo.gov.ru",
+            ips_candidates=[h.to_dict() for h in hits],
+        )
+
+    hit = hits[0]
+    try:
+        redactions = ips_pravo.fetch_redactions(ips_client, nd=hit.nd)
+        chosen = ips_pravo.select_latest_redaction(redactions)
+        if chosen is None:
+            return result
+        html = ips_pravo.fetch_text(ips_client, nd=hit.nd, rdk=chosen.rdk)
+        if html is None:
+            return result
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = human_filename_stem_from_text(hit.adoption, fallback=hit.nd)
+        docx_path = unique_path(out_dir.resolve(), stem, ".docx")
+        convert_redtext_to_docx(html, docx_path)
+    except Exception:
+        # Сбой здесь (сеть, неожиданная разметка) не должен превращать out_of_range
+        # в ошибку всего результата — просто резерв не сработал в этот раз.
+        return result
+
+    return Result(
+        status=Status.FOUND_TEXT_ONLY,
+        ips_nd=hit.nd,
+        ips_docx_path=str(docx_path),
+        ips_state=chosen.status or hit.state,
+        ips_adoption=hit.adoption,
+    )
+
+
 def fetch_document(
     query: Query,
     *,
     client: httpx.Client | None = None,
     ebpi_client: httpx.Client | None = None,
+    ips_client: httpx.Client | None = None,
     cache: AuthorityCache | None = None,
     store: DocumentStore | None = None,
     cache_path: str | Path = DEFAULT_DB_PATH,
@@ -194,20 +259,23 @@ def fetch_document(
     download: bool = True,
     fetch_ebpi_text: bool = True,
     fetch_text_layer_fallback: bool = True,
+    fetch_ips_fallback: bool = True,
 ) -> Result:
     """Ищет документ, скачивает PDF и пробует получить его текст без OCR.
 
-    Порядок: поиск и запись карточки в БД -> PDF, если download=True -> EBPI
-    (actual.pravo.gov.ru — выверенный текст с таблицами; покрывает не все виды
-    актов, см. npa_pipeline.ebpi) -> механическое извлечение текстового слоя
-    (npa_pipeline.text_layer_docx), если EBPI документ не покрыл, но PDF не скан.
-    OCR сюда не входит — это внешний инструмент (см. docs/ocr-integration.md),
-    вызывается отдельно, когда ни ebpi_docx_path, ни text_layer_docx_path не
-    заполнились.
+    Порядок: поиск и запись карточки в БД -> если результат out_of_range, резерв
+    ips.pravo.gov.ru (npa_pipeline.ips_pravo, см. docs/ips-pravo-coverage.md) ->
+    PDF, если download=True -> EBPI (actual.pravo.gov.ru — выверенный текст с
+    таблицами; покрывает не все виды актов, см. npa_pipeline.ebpi) ->
+    механическое извлечение текстового слоя (npa_pipeline.text_layer_docx), если
+    EBPI документ не покрыл, но PDF не скан. OCR сюда не входит — это внешний
+    инструмент (см. docs/ocr-integration.md), вызывается отдельно, когда ни
+    ebpi_docx_path, ни text_layer_docx_path не заполнились.
 
     Все сетевые/целостностные исключения превращаются в Result.status, а не
-    бросаются наружу. Сбой именно EBPI- или текстового шага не портит результат —
-    ни один не обязателен для успеха (см. _attach_ebpi_text, _attach_text_layer_docx).
+    бросаются наружу. Сбой именно EBPI-, текстового или ips-шага не портит
+    результат — ни один не обязателен для успеха (см. _attach_ebpi_text,
+    _attach_text_layer_docx, _try_ips_fallback).
 
     Args:
         query: что искать — реквизиты, eoNumber или разобранная цитата (см.
@@ -215,25 +283,31 @@ def fetch_document(
         fetch_ebpi_text: False — пропустить шаг EBPI полностью.
         fetch_text_layer_fallback: False — пропустить механическое извлечение
             текстового слоя, даже если EBPI не покрыл документ.
-        client, ebpi_client, cache, store, cache_path, db_path, out_dir, download:
-            инфраструктурные параметры (HTTP-клиенты, пути к БД/файлам, кэши) —
-            при None создаются с дефолтами; их назначение видно из имени и типа,
-            здесь не повторяется.
+        fetch_ips_fallback: False — пропустить резерв ips.pravo.gov.ru, даже если
+            основной поиск вернул out_of_range.
+        client, ebpi_client, ips_client, cache, store, cache_path, db_path,
+            out_dir, download: инфраструктурные параметры (HTTP-клиенты, пути к
+            БД/файлам, кэши) — при None создаются с дефолтами; их назначение
+            видно из имени и типа, здесь не повторяется.
 
     Returns:
-        Result со статусом поиска/скачивания. При успехе: pdf_path заполнен всегда
+        Result со статусом поиска/скачивания. При FOUND: pdf_path заполнен всегда
         (если download=True); ebpi_docx_path и text_layer_docx_path — независимо
         друг от друга, в зависимости от того, какой текстовый шаг сработал (оба
         могут остаться None одновременно — например, для скана, который EBPI не
-        покрыл, тогда нужен OCR отдельно).
+        покрыл, тогда нужен OCR отдельно). При FOUND_TEXT_ONLY: pdf_path всегда
+        None (PDF структурно не существует), текст — в ips_docx_path.
     """
     owns_client = client is None
     owns_ebpi_client = ebpi_client is None
+    owns_ips_client = ips_client is None
     path = Path(db_path) if db_path is not None else Path(cache_path)
     if client is None:
         client = create_client()
     if ebpi_client is None and fetch_ebpi_text:
         ebpi_client = ebpi.create_ebpi_client()
+    if ips_client is None and fetch_ips_fallback:
+        ips_client = ips_pravo.create_ips_client()
     if cache is None:
         cache = AuthorityCache(path)
     if store is None:
@@ -243,6 +317,8 @@ def fetch_document(
         result = search_document(client, query, cache)
         if result.status in (Status.FOUND, Status.AMBIGUOUS):
             result = _persist_search_hits(client, store, result)
+        elif result.status == Status.OUT_OF_RANGE and fetch_ips_fallback and ips_client is not None:
+            result = _try_ips_fallback(ips_client, result, query=query, out_dir=Path(out_dir))
 
         if result.status != Status.FOUND or not download:
             return result
@@ -288,3 +364,5 @@ def fetch_document(
             client.close()
         if owns_ebpi_client and ebpi_client is not None:
             ebpi_client.close()
+        if owns_ips_client and ips_client is not None:
+            ips_client.close()

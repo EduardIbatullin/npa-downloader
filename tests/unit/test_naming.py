@@ -3,7 +3,11 @@
 from datetime import date
 
 from npa_pipeline.models import DocItem
-from npa_pipeline.naming import format_document_title, human_filename_stem
+from npa_pipeline.naming import (
+    format_document_title,
+    human_filename_stem,
+    human_filename_stem_from_text,
+)
 
 
 def test_filename_from_complex_name_government_style():
@@ -60,6 +64,21 @@ def test_filename_strips_forbidden_chars():
     assert stem == "Приказ Органа от 01_01_2020 N 1_2"
     assert "/" not in stem
     assert "№" not in stem
+
+
+def test_human_filename_stem_from_text_same_sanitizing_as_doc_item():
+    """Источник без DocItem (ips.pravo.gov.ru) — та же обработка (сокращения,
+    №→N, даты, запрещённые символы), что у human_filename_stem."""
+    stem = human_filename_stem_from_text(
+        "Федеральный закон от 10.01.2002 № 7-ФЗ", fallback="1000000000102074303"
+    )
+    assert stem == "Федеральный закон от 10_01_2002 N 7-ФЗ"
+    assert "№" not in stem
+
+
+def test_human_filename_stem_from_text_uses_fallback_when_empty():
+    assert human_filename_stem_from_text("", fallback="nd-123") == "nd-123"
+    assert human_filename_stem_from_text(None, fallback="nd-123") == "nd-123"
 
 
 def test_format_document_title_includes_requisites_and_theme():

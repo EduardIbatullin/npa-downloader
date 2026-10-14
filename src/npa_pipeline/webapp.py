@@ -302,6 +302,18 @@ def _lookup_npa(q: str) -> dict:
                 ),
             }
             for c in (payload.get("candidates") or [])
+        ]
+        # Кандидаты резерва ips.pravo.gov.ru (см. npa_pipeline.ips_pravo) — без
+        # eoNumber, реквизиты одной строкой, другая форма данных, чем candidates
+        # выше (см. docs/ips-pravo-coverage.md, «Несколько совпадений»).
+        + [
+            {
+                "kind": "npa",
+                "eo_number": None,
+                "title": c.get("adoption"),
+                "description": c.get("adoption") or "",
+            }
+            for c in (payload.get("ips_candidates") or [])
         ],
         "parsed": parsed.to_dict(),
         "raw": payload,

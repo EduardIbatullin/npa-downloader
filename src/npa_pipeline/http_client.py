@@ -54,8 +54,15 @@ def request_json(
     path: str,
     *,
     params: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
 ) -> Any:
     """Выполняет GET/POST и возвращает разобранный JSON, с retry на обрывы и 5xx.
+
+    Args:
+        data: если задан — отправляется как form-urlencoded тело запроса (не
+            query-параметры); нужен для API, принимающих POST с
+            application/x-www-form-urlencoded (например, ips.pravo.gov.ru,
+            см. npa_pipeline.ips_pravo), а не ?params в URL.
 
     Raises:
         NetworkError: после MAX_ATTEMPTS неудачных попыток (обрыв соединения,
@@ -65,7 +72,7 @@ def request_json(
     last_exc: Exception | None = None
     for attempt in range(MAX_ATTEMPTS):
         try:
-            response = client.request(method, path, params=params, timeout=JSON_TIMEOUT)
+            response = client.request(method, path, params=params, data=data, timeout=JSON_TIMEOUT)
             if response.status_code in RETRY_STATUSES:
                 raise httpx.HTTPStatusError(
                     f"HTTP {response.status_code}",
