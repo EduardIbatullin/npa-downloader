@@ -15,7 +15,7 @@ from npa_pipeline.authorities import AuthorityCache
 from npa_pipeline.db import DEFAULT_DB_PATH, DocumentStore
 from npa_pipeline.docx_preview import render_docx_preview_html
 from npa_pipeline.download import find_pdf_by_eo
-from npa_pipeline.ocr_jobs import JobBusyError, OcrJobManager, count_scan_pages
+from npa_pipeline.ocr_jobs import JobBusyError, OcrJobManager, OcrServiceUnavailableError, count_scan_pages
 from npa_pipeline.http_client import create_client
 from npa_pipeline.its import ItsCache
 from npa_pipeline.its_download import fetch_its, fetch_its_by_url_id
@@ -676,11 +676,16 @@ def api_ocr_start(body: OcrStartRequest) -> dict:
         job = ocr_jobs.start(pdf, authority_name=(body.authority_name or None))
     except JobBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OcrServiceUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=f"Сервис распознавания недоступен: {exc}") from exc
     return job.to_dict()
 
 
 def _job_or_404(job_id: str):
-    job = ocr_jobs.get(job_id)
+    try:
+        job = ocr_jobs.get(job_id)
+    except OcrServiceUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=f"Сервис распознавания недоступен: {exc}") from exc
     if job is None:
         raise HTTPException(status_code=404, detail="Задание не найдено (возможно, сервер перезапускался)")
     return job

@@ -15,11 +15,9 @@ EXPOSE 8765
 # host 0.0.0.0 — иначе извне контейнера UI недоступен
 # (npa-web по умолчанию слушает только 127.0.0.1)
 #
-# OCR (кнопка «Распознать скан» в веб-UI) вынесен в отдельный проект npa-ocr
-# (https://github.com/EduardIbatullin/npa-ocr) и здесь не установлен — ocr_jobs.py
-# запускает внешнюю команду `npa-ocr`, которой в этом образе нет. Чтобы она
-# заработала внутри контейнера, нужно либо поставить её в этот же образ
-# (RUN pip install npa-ocr[models] — несколько ГБ, системный Tesseract и
-# torch/torchvision CPU, см. Dockerfile npa-ocr), либо вызывать её в соседнем
-# контейнере/на хосте — выбор пока не сделан.
+# OCR (кнопка «Распознать скан» в веб-UI) — отдельный проект npa-ocr
+# (https://github.com/EduardIbatullin/npa-ocr), здесь не установлен и не нужен:
+# ocr_jobs.py обращается к нему по HTTP (OCR_SERVICE_URL), не subprocess — свой
+# образ, свой контейнер (сервис `ocr` в docker-compose.yml), см.
+# docs/ocr-integration.md.
 CMD ["uvicorn", "npa_pipeline.webapp:app", "--host", "0.0.0.0", "--port", "8765"]

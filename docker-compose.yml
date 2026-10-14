@@ -7,4 +7,22 @@ services:
       # БД и скачанные PDF сохраняются на хосте между перезапусками
       - ./data:/app/data
       - ./downloads:/app/downloads
+    environment:
+      # Имя сервиса ocr — DNS внутри сети, которую создаёт compose (см. ниже).
+      - OCR_SERVICE_URL=http://ocr:8000
+    depends_on:
+      - ocr
+    restart: unless-stopped
+
+  ocr:
+    # Образ — отдельный проект (npa-ocr, своё репо), собирается отдельно, не
+    # отсюда: build: ../npa-ocr намеренно не используется — сервис не обязан
+    # жить рядом с этим репозиторием (в будущем — свой хост или реестр образов,
+    # см. docs/ocr-integration.md).
+    #   cd ../npa-ocr && docker build -t npa-ocr .
+    image: npa-ocr:latest
+    # command: без entrypoint добавился бы к ENTRYPOINT ["npa-ocr"] образа (CLI),
+    # а не заменил его — нужно переопределить оба.
+    entrypoint: ["uvicorn"]
+    command: ["npa_ocr.server:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
