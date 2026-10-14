@@ -32,3 +32,4 @@ run*.progress.log
 smoke/
 *.bak_*
 cache/
+ocr_scratch/
