@@ -25,6 +25,11 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Локальные переопределения docker-compose (напр. WEB_PORT на сервере, где
+# порт по умолчанию занят другим процессом) — для конкретного хоста, не в git
+.env
+docker-compose.override.yml
+
 # Рабочие папки прогонов OCR
 run*/
 run*.log
