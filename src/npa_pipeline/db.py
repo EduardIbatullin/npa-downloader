@@ -143,6 +143,17 @@ CREATE TABLE IF NOT EXISTS its_crawl_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ips_documents (
+    nd        TEXT PRIMARY KEY,  -- внутренний id документа в ips.pravo.gov.ru,
+                                  -- не eoNumber (см. npa_pipeline.ips_pravo) —
+                                  -- без FK на documents, это структурно другой
+                                  -- источник (Status.FOUND_TEXT_ONLY)
+    adoption  TEXT,
+    state     TEXT,
+    docx_path TEXT NOT NULL,
+    found_at  TEXT NOT NULL
+);
 """
 
 
@@ -175,6 +186,19 @@ class EbpiRecord:
     red_date: str | None
     docx_path: str | None
     checked_at: str
+
+
+@dataclass
+class IpsDocumentRecord:
+    """Найденный через резерв ips.pravo.gov.ru документ — зеркало строки
+    ips_documents (см. npa_pipeline.service._try_ips_fallback). Нет eo_number —
+    это не тот источник."""
+
+    nd: str
+    adoption: str | None
+    state: str | None
+    docx_path: str
+    found_at: str
 
 
 def resolve_db_path(db_path: str | Path = DEFAULT_DB_PATH) -> Path:
@@ -567,6 +591,51 @@ class DocumentStore:
             red_date=row["red_date"],
             docx_path=row["docx_path"],
             checked_at=row["checked_at"],
+        )
+
+    def record_ips_document(
+        self,
+        *,
+        nd: str,
+        adoption: str | None,
+        state: str | None,
+        docx_path: str | Path,
+    ) -> IpsDocumentRecord:
+        """Регистрирует документ, найденный через резерв ips.pravo.gov.ru
+        (см. npa_pipeline.service._try_ips_fallback) — без этого
+        GET /api/docx/{nd} (webapp.py) не смог бы отдать файл по отдельному
+        запросу: nd не хранится нигде, кроме Result текущего запроса."""
+        now = utc_now_iso()
+        path_str = str(docx_path)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO ips_documents (nd, adoption, state, docx_path, found_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(nd) DO UPDATE SET
+                    adoption = excluded.adoption,
+                    state = excluded.state,
+                    docx_path = excluded.docx_path,
+                    found_at = excluded.found_at
+                """,
+                (nd, adoption, state, path_str, now),
+            )
+            conn.commit()
+        return IpsDocumentRecord(nd=nd, adoption=adoption, state=state, docx_path=path_str, found_at=now)
+
+    def get_ips_document(self, nd: str) -> IpsDocumentRecord | None:
+        """Возвращает запись о документе из резерва ips.pravo.gov.ru по nd, либо
+        None — такой nd не регистрировался."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM ips_documents WHERE nd = ?", (nd,)).fetchone()
+        if not row:
+            return None
+        return IpsDocumentRecord(
+            nd=row["nd"],
+            adoption=row["adoption"],
+            state=row["state"],
+            docx_path=row["docx_path"],
+            found_at=row["found_at"],
         )
 
     def record_relation(

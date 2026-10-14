@@ -1,0 +1,158 @@
+"""/api/docx/{nd}: отдаёт .docx документа, найденного через резерв
+ips.pravo.gov.ru (Status.FOUND_TEXT_ONLY), по внутреннему nd — не eoNumber,
+см. npa_pipeline.webapp.get_ips_docx."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from docx import Document
+from fastapi.testclient import TestClient
+
+from npa_pipeline import webapp
+from npa_pipeline.db import DocumentStore
+
+ND = "1000000000102074303"
+
+
+def _real_docx(path: Path, text: str = "Текст документа для предпросмотра") -> None:
+    doc = Document()
+    doc.add_paragraph(text)
+    doc.save(str(path))
+
+
+def _client(tmp_path: Path, monkeypatch) -> TestClient:
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    return TestClient(webapp.app)
+
+
+def test_get_docx_404_for_unknown_nd(tmp_path: Path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    resp = client.get(f"/api/docx/{ND}")
+    assert resp.status_code == 404
+
+
+def test_get_docx_open_returns_html_preview_not_raw_file(tmp_path: Path, monkeypatch):
+    """«Открыть» (без download=1) на настоящий .docx — HTML-предпросмотр, не
+    файл: браузер не умеет рендерить .docx inline (см. npa_pipeline.docx_preview,
+    это и была жалоба — кнопка «Открыть» вызывала диалог сохранения)."""
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    docx_path = tmp_path / "Федеральный закон от 10_01_2002 N 7-ФЗ.docx"
+    _real_docx(docx_path, "Текст закона об охране окружающей среды")
+
+    store = DocumentStore(db_path)
+    store.record_ips_document(
+        nd=ND,
+        adoption="Федеральный закон от 10.01.2002 № 7-ФЗ",
+        state="актуальная",
+        docx_path=docx_path,
+    )
+
+    client = TestClient(webapp.app)
+    resp = client.get(f"/api/docx/{ND}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "Текст закона об охране окружающей среды" in resp.text
+    assert "attachment" not in resp.headers.get("content-disposition", "")
+
+
+def test_get_docx_download_flag_returns_real_file_unchanged(tmp_path: Path, monkeypatch):
+    """«Скачать» (download=1) — настоящий файл .docx как есть, без предпросмотра."""
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    docx_path = tmp_path / "doc.docx"
+    _real_docx(docx_path)
+    DocumentStore(db_path).record_ips_document(
+        nd=ND, adoption=None, state=None, docx_path=docx_path
+    )
+
+    client = TestClient(webapp.app)
+    resp = client.get(f"/api/docx/{ND}?download=1")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert resp.content == docx_path.read_bytes()
+    assert "attachment" in resp.headers.get("content-disposition", "")
+
+
+def test_get_docx_open_falls_back_to_raw_file_when_not_a_real_docx(tmp_path: Path, monkeypatch):
+    """Файл с расширением .docx, который не парсится (не zip/OOXML) — тихий
+    фолбэк на обычную отдачу, а не 500 — см. _office_file_response."""
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    docx_path = tmp_path / "broken.docx"
+    docx_path.write_bytes(b"not a real docx")
+    DocumentStore(db_path).record_ips_document(
+        nd=ND, adoption=None, state=None, docx_path=docx_path
+    )
+
+    client = TestClient(webapp.app)
+    resp = client.get(f"/api/docx/{ND}")
+    assert resp.status_code == 200
+    assert resp.content == b"not a real docx"
+
+
+def _seed_its_word_file(db_path: Path, *, file_id: int, docx_path: Path) -> None:
+    """Прямые INSERT в its_documents/its_files/its_document_files — тот же
+    приём, что test_service_ebpi.py._seed_authority, т.к. FK проверяются
+    (PRAGMA foreign_keys = ON, см. npa_pipeline.db.connect)."""
+    import sqlite3
+
+    from npa_pipeline.db import connect, init_schema
+
+    with connect(db_path) as conn:
+        init_schema(conn)
+        conn.execute(
+            "INSERT INTO its_documents (url_id, designation, designation_norm, first_seen_at, updated_at) "
+            "VALUES (1640, 'ИТС 28-2021', 'итс 28-2021', 'now', 'now')"
+        )
+        conn.execute(
+            "INSERT INTO its_files (file_id, url_id, role, updated_at) VALUES (?, 1640, 'order', 'now')",
+            (file_id,),
+        )
+        conn.execute(
+            "INSERT INTO its_document_files (file_id, file_path, sha256, size_bytes, downloaded_at) "
+            "VALUES (?, ?, 'x', 1, 'now')",
+            (file_id, str(docx_path)),
+        )
+        conn.commit()
+
+
+def test_its_pdf_endpoint_open_also_previews_docx(tmp_path: Path, monkeypatch):
+    """Тот же фикс для /api/its/pdf/{file_id} — общая точка
+    _office_file_response, не дублированная отдельно для ИТС."""
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    docx_path = tmp_path / "its_order.docx"
+    _real_docx(docx_path, "Текст приказа Росстандарта")
+    _seed_its_word_file(db_path, file_id=555, docx_path=docx_path)
+
+    client = TestClient(webapp.app)
+
+    opened = client.get("/api/its/pdf/555")
+    assert opened.status_code == 200
+    assert opened.headers["content-type"].startswith("text/html")
+    assert "Текст приказа Росстандарта" in opened.text
+
+    downloaded = client.get("/api/its/pdf/555?download=1")
+    assert downloaded.status_code == 200
+    assert downloaded.headers["content-type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert downloaded.content == docx_path.read_bytes()
+
+
+def test_get_docx_404_when_file_missing_from_disk(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    missing_path = tmp_path / "gone.docx"  # запись в БД есть, файла на диске нет
+    DocumentStore(db_path).record_ips_document(
+        nd=ND, adoption=None, state=None, docx_path=missing_path
+    )
+
+    client = TestClient(webapp.app)
+    resp = client.get(f"/api/docx/{ND}")
+    assert resp.status_code == 404

@@ -6,13 +6,14 @@ import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query as FastQuery
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from npa_pipeline import burondt
 from npa_pipeline.authorities import AuthorityCache
 from npa_pipeline.db import DEFAULT_DB_PATH, DocumentStore
+from npa_pipeline.docx_preview import render_docx_preview_html
 from npa_pipeline.download import find_pdf_by_eo
 from npa_pipeline.ocr_jobs import JobBusyError, OcrJobManager, count_scan_pages
 from npa_pipeline.http_client import create_client
@@ -81,6 +82,37 @@ def _store() -> DocumentStore:
 
 def _its_cache() -> ItsCache:
     return ItsCache(DEFAULT_DB)
+
+
+_OFFICE_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".doc": "application/msword",
+}
+
+
+def _office_file_response(path: Path, *, download: bool) -> Response:
+    """Отдаёт файл документа; «Открыть» (download=False) для .docx — HTML-
+    предпросмотр на лету (см. npa_pipeline.docx_preview), не сам файл: браузеры
+    не умеют рендерить .docx inline, Content-Disposition: inline на реальный
+    .docx всё равно вызывал бы скачивание/диалог «открыть в Word».
+
+    Старый .doc (бинарный, не OOXML) и любой сбой разбора .docx — тихий
+    фолбэк на обычную отдачу файла (как и для PDF, где это и есть правильное
+    поведение — браузер отрисовывает его сам).
+    """
+    if not download and path.suffix.lower() == ".docx":
+        try:
+            return HTMLResponse(render_docx_preview_html(path))
+        except Exception:
+            pass
+    media = _OFFICE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=media,
+        filename=path.name,
+        content_disposition_type="attachment" if download else "inline",
+    )
 
 
 def _looks_like_its(q: str) -> bool:
@@ -271,6 +303,18 @@ def _lookup_npa(q: str) -> dict:
             }
         )
         payload["pdf_url"] = f"/api/pdf/{result.eo_number}"
+    if result.ips_docx_path and result.ips_nd:
+        # Status.FOUND_TEXT_ONLY (резерв ips.pravo.gov.ru) — PDF структурно не
+        # существует, текст отдаётся как .docx, см. npa_pipeline.ips_pravo.
+        files.append(
+            {
+                "label": "DOCX (ips.pravo.gov.ru)",
+                "role": "document",
+                "open_url": f"/api/docx/{result.ips_nd}",
+                "download_url": f"/api/docx/{result.ips_nd}?download=1",
+            }
+        )
+        payload["docx_url"] = f"/api/docx/{result.ips_nd}"
 
     ocr = _ocr_info(
         result.pdf_path,
@@ -440,6 +484,8 @@ def api_fetch(body: FetchRequest) -> dict:
     if result.pdf_path:
         eo = result.eo_number or ""
         payload["pdf_url"] = f"/api/pdf/{eo}" if eo else None
+    if result.ips_docx_path and result.ips_nd:
+        payload["docx_url"] = f"/api/docx/{result.ips_nd}"
     return payload
 
 
@@ -500,6 +546,31 @@ def get_pdf(
         filename=filename,
         content_disposition_type="attachment" if download else "inline",
     )
+
+
+@app.get("/api/docx/{nd}")
+def get_ips_docx(
+    nd: str,
+    download: bool = FastQuery(default=False),
+) -> Response:
+    """Отдаёт документ, найденный через резерв ips.pravo.gov.ru
+    (Status.FOUND_TEXT_ONLY, см. npa_pipeline.ips_pravo) — по внутреннему nd,
+    не eoNumber: у этих документов eoNumber нет в принципе.
+
+    download=False («Открыть») — HTML-предпросмотр (см. _office_file_response),
+    не сам .docx — браузер не умеет рендерить .docx inline. Имя файла при
+    скачивании уже собрано по текущим правилам в момент сохранения
+    (naming.human_filename_stem_from_text) — пересборка не нужна, в отличие от
+    get_pdf.
+    """
+    store = _store()
+    rec = store.get_ips_document(nd)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Документ не найден (резерв ips.pravo.gov.ru)")
+    path = Path(rec.docx_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Файл не найден на диске")
+    return _office_file_response(path, download=download)
 
 
 @app.post("/api/refresh-its")
@@ -597,7 +668,12 @@ def api_ocr_docx(job_id: str) -> FileResponse:
 def get_its_pdf(
     file_id: int,
     download: bool = FastQuery(default=False),
-) -> FileResponse:
+) -> Response:
+    """Отдаёт файл карточки ИТС — PDF или Word (справочник/приказ, см.
+    npa_pipeline.its_download). download=False («Открыть») для .docx — HTML-
+    предпросмотр, не сам файл (см. _office_file_response); PDF и старый .doc
+    отдаются как есть — для .doc нет парсера предпросмотра, браузер справится
+    с .pdf нативно."""
     cache = _its_cache()
     rec = cache.get_file_record(file_id)
     if rec is None:
@@ -605,18 +681,7 @@ def get_its_pdf(
     path = Path(rec["file_path"])
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден на диске")
-    suffix = path.suffix.lower()
-    media = {
-        ".pdf": "application/pdf",
-        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".doc": "application/msword",
-    }.get(suffix, "application/octet-stream")
-    return FileResponse(
-        path,
-        media_type=media,
-        filename=path.name,
-        content_disposition_type="attachment" if download else "inline",
-    )
+    return _office_file_response(path, download=download)
 
 
 def main() -> None:

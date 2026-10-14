@@ -189,6 +189,7 @@ def _try_ips_fallback(
     *,
     query: Query,
     out_dir: Path,
+    store: DocumentStore,
 ) -> Result:
     """Пробует найти документ через ips.pravo.gov.ru, когда он старше границы
     охвата publication.pravo.gov.ru — единственная альтернатива для таких
@@ -199,13 +200,17 @@ def _try_ips_fallback(
         result: уже вычисленный Status.OUT_OF_RANGE от основного поиска.
         query: должен содержать number и date — иначе основной поиск не мог бы
             прийти к out_of_range (см. search.search_document).
+        store: нужен, чтобы запомнить nd -> docx_path (ips_documents) — без
+            этого GET /api/docx/{nd} в webapp.py не мог бы отдать файл по
+            отдельному запросу, и повторный поиск того же документа плодил бы
+            дубликаты .docx вместо переиспользования уже готового файла.
 
     Returns:
         Status.FOUND_TEXT_ONLY с текстом (ips_docx_path), если резерв нашёл ровно
-        одного кандидата и успешно получил текст; Status.AMBIGUOUS с
-        ips_candidates, если кандидатов несколько; иначе исходный result
-        (out_of_range) без изменений — ноль кандидатов, сбой сети или структуры
-        ответа трактуются одинаково, не как ошибка всего результата.
+        одного кандидата и получил текст (из кэша в БД или свежим запросом);
+        Status.AMBIGUOUS с ips_candidates, если кандидатов несколько; иначе
+        исходный result (out_of_range) без изменений — ноль кандидатов, сбой сети
+        или структуры ответа трактуются одинаково, не как ошибка всего результата.
     """
     assert query.number is not None and query.date is not None
     hits = ips_pravo.search_by_requisites(ips_client, number=query.number, doc_date=query.date)
@@ -219,6 +224,16 @@ def _try_ips_fallback(
         )
 
     hit = hits[0]
+    cached = store.get_ips_document(hit.nd)
+    if cached is not None and Path(cached.docx_path).is_file():
+        return Result(
+            status=Status.FOUND_TEXT_ONLY,
+            ips_nd=hit.nd,
+            ips_docx_path=cached.docx_path,
+            ips_state=cached.state or hit.state,
+            ips_adoption=cached.adoption or hit.adoption,
+        )
+
     try:
         redactions = ips_pravo.fetch_redactions(ips_client, nd=hit.nd)
         chosen = ips_pravo.select_latest_redaction(redactions)
@@ -236,11 +251,20 @@ def _try_ips_fallback(
         # в ошибку всего результата — просто резерв не сработал в этот раз.
         return result
 
+    ips_state = chosen.status or hit.state
+    try:
+        store.record_ips_document(nd=hit.nd, adoption=hit.adoption, state=ips_state, docx_path=docx_path)
+    except Exception:
+        # Сбой записи в БД не должен обнулять уже готовый текст — просто
+        # GET /api/docx/{nd} не сработает для этого документа, пока не найдётся
+        # заново (запись перезапишется при следующем успешном поиске).
+        pass
+
     return Result(
         status=Status.FOUND_TEXT_ONLY,
         ips_nd=hit.nd,
         ips_docx_path=str(docx_path),
-        ips_state=chosen.status or hit.state,
+        ips_state=ips_state,
         ips_adoption=hit.adoption,
     )
 
@@ -318,7 +342,7 @@ def fetch_document(
         if result.status in (Status.FOUND, Status.AMBIGUOUS):
             result = _persist_search_hits(client, store, result)
         elif result.status == Status.OUT_OF_RANGE and fetch_ips_fallback and ips_client is not None:
-            result = _try_ips_fallback(ips_client, result, query=query, out_dir=Path(out_dir))
+            result = _try_ips_fallback(ips_client, result, query=query, out_dir=Path(out_dir), store=store)
 
         if result.status != Status.FOUND or not download:
             return result

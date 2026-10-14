@@ -162,6 +162,48 @@ def test_ips_fallback_skipped_when_download_requested_but_no_eo_number(tmp_path:
     assert result.pdf_path is None
 
 
+def test_repeated_fetch_reuses_cached_docx_without_refetching_text(tmp_path: Path):
+    """Второй поиск того же документа не должен ни плодить дубликат .docx
+    (_2.docx), ни заново запрашивать карточку/текст — см. DocumentStore.
+    record_ips_document/get_ips_document в service._try_ips_fallback."""
+    cache = _cache(tmp_path)
+    store = DocumentStore(cache.db_path)
+    network_calls = {"card": 0, "text": 0}
+
+    def _tracking_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/ips/legislation/document_card.json":
+            network_calls["card"] += 1
+        if path == "/api/ips/legislation/documenttext":
+            network_calls["text"] += 1
+        return _ips_handler_single_hit(request)
+
+    def _run():
+        pravo_client = create_client(transport=httpx.MockTransport(_pravo_empty_handler))
+        ips_client = ips_pravo.create_ips_client(transport=httpx.MockTransport(_tracking_handler))
+        return fetch_document(
+            Query(authority_guid=PRESIDENT, number="7-ФЗ", date=date(2002, 1, 10)),
+            client=pravo_client,
+            ips_client=ips_client,
+            cache=cache,
+            store=store,
+            out_dir=tmp_path / "downloads",
+        )
+
+    first = _run()
+    second = _run()
+
+    assert first.status == Status.FOUND_TEXT_ONLY
+    assert second.status == Status.FOUND_TEXT_ONLY
+    assert second.ips_docx_path == first.ips_docx_path  # не "..._2.docx"
+    assert network_calls == {"card": 1, "text": 1}  # второй раз не запрашивались
+
+    rec = store.get_ips_document(ND)
+    assert rec is not None
+    assert rec.docx_path == first.ips_docx_path
+    assert rec.adoption == "Федеральный закон от 10.01.2002 № 7-ФЗ"
+
+
 def test_to_dict_exposes_ips_fields(tmp_path: Path):
     result = _fetch(tmp_path, _ips_handler_single_hit)
     data = result.to_dict()
