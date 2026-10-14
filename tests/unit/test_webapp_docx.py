@@ -6,19 +6,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from datetime import date
+
 from docx import Document
 from fastapi.testclient import TestClient
 
 from npa_pipeline import webapp
 from npa_pipeline.db import DocumentStore
+from npa_pipeline.models import DocItem
 
 ND = "1000000000102074303"
+EO = "0001202503200023"
 
 
 def _real_docx(path: Path, text: str = "Текст документа для предпросмотра") -> None:
     doc = Document()
     doc.add_paragraph(text)
     doc.save(str(path))
+
+
+def _seed_document(store: DocumentStore, eo_number: str = EO) -> None:
+    store.upsert_from_doc_item(
+        DocItem(
+            eo_number=eo_number,
+            number="33-ФЗ",
+            document_date=date(2025, 3, 20),
+            signatory_ids=[],
+        )
+    )
 
 
 def _client(tmp_path: Path, monkeypatch) -> TestClient:
@@ -155,4 +170,63 @@ def test_get_docx_404_when_file_missing_from_disk(tmp_path: Path, monkeypatch):
 
     client = TestClient(webapp.app)
     resp = client.get(f"/api/docx/{ND}")
+    assert resp.status_code == 404
+
+
+def test_docx_text_prefers_ebpi_over_text_layer(tmp_path: Path, monkeypatch):
+    """/api/docx-text/{eo_number}: EBPI в приоритете, как и в service.py
+    (_attach_ebpi_text перед _attach_text_layer_docx) — покрывает пробел,
+    из-за которого найденный EBPI-текст НПА не был доступен через веб-UI
+    вообще (ни кнопки, ни эндпоинта)."""
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    store = DocumentStore(db_path)
+    _seed_document(store)
+
+    ebpi_docx = tmp_path / "ebpi.docx"
+    _real_docx(ebpi_docx, "Текст из EBPI")
+    store.record_ebpi(eo_number=EO, covered=True, docx_path=ebpi_docx)
+
+    # текстовый слой тоже «есть» (на случай будущей регрессии приоритета)
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    store.record_file(eo_number=EO, file_path=pdf_path, sha256="x", size_bytes=1, pages=1)
+    text_layer_docx = pdf_path.with_suffix(".docx")
+    _real_docx(text_layer_docx, "Текст из текстового слоя")
+
+    client = TestClient(webapp.app)
+    resp = client.get(f"/api/docx-text/{EO}")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "Текст из EBPI" in resp.text
+    assert "Текст из текстового слоя" not in resp.text
+
+
+def test_docx_text_falls_back_to_text_layer_when_ebpi_not_covered(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    store = DocumentStore(db_path)
+    _seed_document(store)
+    store.record_ebpi(eo_number=EO, covered=False)  # EBPI проверялся, не покрыл
+
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+    store.record_file(eo_number=EO, file_path=pdf_path, sha256="x", size_bytes=1, pages=1)
+    text_layer_docx = pdf_path.with_suffix(".docx")
+    _real_docx(text_layer_docx, "Текст из текстового слоя")
+
+    client = TestClient(webapp.app)
+    resp = client.get(f"/api/docx-text/{EO}?download=1")
+    assert resp.status_code == 200
+    assert resp.content == text_layer_docx.read_bytes()
+
+
+def test_docx_text_404_when_neither_source_available(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "npa.db"
+    monkeypatch.setattr(webapp, "DEFAULT_DB", db_path)
+    store = DocumentStore(db_path)
+    _seed_document(store)
+
+    client = TestClient(webapp.app)
+    resp = client.get(f"/api/docx-text/{EO}")
     assert resp.status_code == 404

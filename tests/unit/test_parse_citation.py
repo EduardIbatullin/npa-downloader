@@ -33,6 +33,16 @@ def test_parse_federal_law_310_golden():
     assert parsed.authority_name == "Президент Российской Федерации"
 
 
+def test_parse_collapses_accidentally_duplicated_ot():
+    """Опечатка «от от» (встретилась на практике при ручном вводе) не должна
+    ломать разбор — см. _DUPLICATE_OT в parse_citation.py."""
+    parsed = parse_citation("Федеральный закон от от 20.03.2025 № 33-ФЗ")
+    assert parsed.number == "33-ФЗ"
+    assert parsed.date == date(2025, 3, 20)
+    assert parsed.authority_name == "Президент Российской Федерации"
+    assert parsed.doc_type == "федеральный закон"
+
+
 def test_parse_prikaz_genitive_authority():
     text = (
         "Приказ Министерства природных ресурсов и экологии Российской Федерации "

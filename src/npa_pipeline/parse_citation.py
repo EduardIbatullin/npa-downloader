@@ -131,6 +131,11 @@ _PARENS_REDACTION = re.compile(
 
 _BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _SPACES = re.compile(r"\s+")
+# Случайный повтор слова «от» подряд (частая опечатка при ручном вводе, напр.
+# «Федеральный закон от от 20.03.2025 № 33-ФЗ») — без схлопывания _REQUISITES
+# (ищет head нежадно, до первого «от <дата>») прячет лишнее «от» внутрь head,
+# из-за чего орган не инферится (см. _authority_from_head) и документ не находится.
+_DUPLICATE_OT = re.compile(r"\bот(?:\s+от\b)+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -260,6 +265,7 @@ def parse_citation(text: str) -> ParsedCitation:
     # Основные реквизиты — без хвоста «(в ред. …)», иначе цепляется дата правки.
     main = _PARENS_REDACTION.sub(" ", original)
     main = _SPACES.sub(" ", main).strip()
+    main = _DUPLICATE_OT.sub("от", main)
 
     match = _REQUISITES.search(main)
     if not match:

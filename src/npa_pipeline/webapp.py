@@ -315,6 +315,21 @@ def _lookup_npa(q: str) -> dict:
             }
         )
         payload["docx_url"] = f"/api/docx/{result.ips_nd}"
+    if (result.ebpi_docx_path or result.text_layer_docx_path) and result.eo_number:
+        # EBPI или механическое извлечение текстового слоя (см. service.py,
+        # _attach_ebpi_text/_attach_text_layer_docx) — текст уже есть рядом с
+        # PDF, но до сих пор не был доступен через веб-UI вообще (только
+        # ips_docx_path получил кнопку раньше) — тот же текст, что в
+        # ebpi_docstate, просто не было способа его открыть/скачать.
+        files.append(
+            {
+                "label": "DOCX" + (f" ({result.ebpi_docstate})" if result.ebpi_docstate else ""),
+                "role": "document",
+                "open_url": f"/api/docx-text/{result.eo_number}",
+                "download_url": f"/api/docx-text/{result.eo_number}?download=1",
+            }
+        )
+        payload["docx_url"] = f"/api/docx-text/{result.eo_number}"
 
     ocr = _ocr_info(
         result.pdf_path,
@@ -486,6 +501,8 @@ def api_fetch(body: FetchRequest) -> dict:
         payload["pdf_url"] = f"/api/pdf/{eo}" if eo else None
     if result.ips_docx_path and result.ips_nd:
         payload["docx_url"] = f"/api/docx/{result.ips_nd}"
+    if (result.ebpi_docx_path or result.text_layer_docx_path) and result.eo_number:
+        payload["docx_url"] = f"/api/docx-text/{result.eo_number}"
     return payload
 
 
@@ -571,6 +588,36 @@ def get_ips_docx(
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден на диске")
     return _office_file_response(path, download=download)
+
+
+@app.get("/api/docx-text/{eo_number}")
+def get_npa_docx_text(
+    eo_number: str,
+    download: bool = FastQuery(default=False),
+) -> Response:
+    """Отдаёт текст НПА без OCR — EBPI (см. npa_pipeline.ebpi), если документ
+    там покрыт, иначе механическое извлечение текстового слоя (см.
+    npa_pipeline.text_layer_docx), тем же приоритетом, что в service.py
+    (_attach_ebpi_text перед _attach_text_layer_docx).
+
+    text_layer_docx_path нигде не хранится отдельной записью в БД — выводится
+    детерминированно из уже известного пути PDF (тот же stem), как и в самом
+    service.py, поэтому отдельной таблицы под него не нужно.
+
+    download=False («Открыть») — HTML-предпросмотр, см. _office_file_response.
+    """
+    store = _store()
+    ebpi = store.get_ebpi(eo_number)
+    if ebpi is not None and ebpi.covered and ebpi.docx_path and Path(ebpi.docx_path).is_file():
+        return _office_file_response(Path(ebpi.docx_path), download=download)
+
+    pdf_path = find_pdf_by_eo(store, eo_number)
+    if pdf_path is not None:
+        text_layer_path = pdf_path.with_suffix(".docx")
+        if text_layer_path.is_file():
+            return _office_file_response(text_layer_path, download=download)
+
+    raise HTTPException(status_code=404, detail="Текст документа не найден на диске")
 
 
 @app.post("/api/refresh-its")
