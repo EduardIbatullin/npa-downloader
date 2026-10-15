@@ -112,18 +112,37 @@ def test_select_latest_redaction_picks_max_reddate_not_actual_flag():
         {"redid": 473307, "reddate": "20250901", "redinitial": True, "actual": False},
         {"redid": 497231, "reddate": "20260923", "redinitial": False, "actual": True},
     ]
-    chosen = ebpi.select_latest_redaction(redactions)
+    # as_of фиксируем: обе даты уже в прошлом относительно отсчёта
+    chosen = ebpi.select_latest_redaction(redactions, as_of="20261015")
     assert chosen is not None
     assert chosen["redid"] == 497231  # действующая, с поправками — самая свежая дата
 
     # порядок в списке не важен — работает по max(reddate), не по позиции
-    assert ebpi.select_latest_redaction(list(reversed(redactions)))["redid"] == 497231
+    assert ebpi.select_latest_redaction(list(reversed(redactions)), as_of="20261015")["redid"] == 497231
+
+
+def test_select_latest_redaction_skips_future_reddate():
+    # Регресс: Постановление №255 — max(reddate) брал будущую 01.03.2028 с пустым
+    # redtext, UI показывал «DOCX есть», файл открывался пустым листом.
+    redactions = [
+        {"redid": 1, "reddate": "20230217", "redinitial": True, "actual": False},
+        {"redid": 2, "reddate": "20240115", "redinitial": False, "actual": False},
+        {"redid": 3, "reddate": "20280301", "redinitial": False, "actual": True},
+    ]
+    chosen = ebpi.select_latest_redaction(redactions, as_of="20261015")
+    assert chosen is not None
+    assert chosen["redid"] == 2  # последняя уже вступившая, не будущая заглушка
+
+
+def test_select_latest_redaction_none_when_all_future():
+    only_future = [{"redid": 3, "reddate": "20280301", "redinitial": False}]
+    assert ebpi.select_latest_redaction(only_future, as_of="20261015") is None
 
 
 def test_select_latest_redaction_single_unamended_document():
     # неизменённый документ: одна редакция, actual=False — всё равно выбирается
     redactions = [{"redid": 488318, "reddate": "20260226", "redinitial": True, "actual": False}]
-    assert ebpi.select_latest_redaction(redactions)["redid"] == 488318
+    assert ebpi.select_latest_redaction(redactions, as_of="20261015")["redid"] == 488318
 
 
 def test_select_latest_redaction_none_when_missing():

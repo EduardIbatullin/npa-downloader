@@ -114,6 +114,9 @@ class Result:
     # это не ошибка всего результата, PDF при этом уже скачан и доступен.
     ebpi_docx_path: str | None = None
     ebpi_docstate: str | None = None  # напр. «Действует без изменений» / «Действует с изменениями»
+    # Дата выбранной редакции EBPI (YYYYMMDD) — для подписи в UI «… с изменениями
+    # от DD.MM.YYYYг.»; None, если текста EBPI нет.
+    ebpi_red_date: str | None = None
     # Резервный .docx, когда EBPI документ не покрывает, но PDF не скан (текстовый
     # слой есть на всех страницах) — механическое извлечение текста (pypdf), без
     # OCR и без распознавания структуры/таблиц, см. npa_pipeline.text_layer_docx.
@@ -144,6 +147,7 @@ class Result:
             "message": self.message,
             "ebpi_docx_path": self.ebpi_docx_path,
             "ebpi_docstate": self.ebpi_docstate,
+            "ebpi_red_date": self.ebpi_red_date,
             "text_layer_docx_path": self.text_layer_docx_path,
             "ips_nd": self.ips_nd,
             "ips_docx_path": self.ips_docx_path,

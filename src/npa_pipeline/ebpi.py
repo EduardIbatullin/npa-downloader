@@ -205,23 +205,46 @@ def select_initial_redaction(redactions: list[dict]) -> dict | None:
     return None
 
 
-def select_latest_redaction(redactions: list[dict]) -> dict | None:
-    """Возвращает самую свежую редакцию (по reddate) — действующую версию текста
-    с учётом всех внесённых поправок.
+def select_latest_redaction(
+    redactions: list[dict],
+    *,
+    as_of: str | None = None,
+) -> dict | None:
+    """Возвращает самую свежую уже вступившую в силу редакцию (по reddate).
 
     Используется в fetch_ebpi_document() — обоснование выбора между этой функцией
     и select_initial_redaction см. docs/ebpi-coverage.md, «Выбор редакции». Для
     неизменённого документа это та же единственная редакция, что отдала бы
     select_initial_redaction.
 
+    Редакции с reddate позже «сегодня» пропускаются: иначе max(reddate) берёт
+    ещё не вступившую правку, а EBPI на таких redid нередко отдаёт пустой
+    redtext (валидный, но пустой .docx). Пример — Постановление №255, где
+    будущая редакция от 01.03.2028 давала пустой файл при «положительном»
+    статусе covered. Тот же класс ловушки уже закрыт в ips_pravo.select_latest_redaction
+    по статусу «не вступившая в силу».
+
+    Args:
+        redactions: список редакций из fetch_redactions.
+        as_of: дата отсчёта в YYYYMMDD; по умолчанию текущая UTC-дата.
+            Нужен в тестах, чтобы не зависеть от календаря машины.
+
     Returns:
-        Редакция с максимальным reddate (формат YYYYMMDD, сравнивается как
-        строка), либо None для пустого списка. Поле `actual` для этого выбора не
-        годится — см. docstring select_initial_redaction.
+        Редакция с максимальным reddate среди уже вступивших (формат YYYYMMDD,
+        сравнивается как строка), либо None — список пуст или все редакции ещё
+        в будущем. Поле `actual` для этого выбора не годится — см. docstring
+        select_initial_redaction.
     """
     if not redactions:
         return None
-    return max(redactions, key=lambda r: r.get("reddate") or "")
+    today = as_of or datetime.now(timezone.utc).strftime("%Y%m%d")
+    effective = [
+        r for r in redactions
+        if (rd := r.get("reddate") or "") and rd <= today
+    ]
+    if not effective:
+        return None
+    return max(effective, key=lambda r: r.get("reddate") or "")
 
 
 def fetch_redtext(client: httpx.Client, redid: int) -> str | None:

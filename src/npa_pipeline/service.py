@@ -88,6 +88,7 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
         elif cached.docx_path and Path(cached.docx_path).is_file():
             result.ebpi_docx_path = cached.docx_path
             result.ebpi_docstate = cached.docstate
+            result.ebpi_red_date = cached.red_date
             return result
         # covered, но файла на диске нет (удалили/перенесли) — перекачаем
 
@@ -107,6 +108,7 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
         convert_redtext_to_docx(doc.html, docx_path)
         result.ebpi_docx_path = str(docx_path)
         result.ebpi_docstate = doc.docstate
+        result.ebpi_red_date = doc.red_date
         store.record_ebpi(
             eo_number=eo_number,
             covered=True,

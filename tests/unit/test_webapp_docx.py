@@ -230,3 +230,52 @@ def test_docx_text_404_when_neither_source_available(tmp_path: Path, monkeypatch
     client = TestClient(webapp.app)
     resp = client.get(f"/api/docx-text/{EO}")
     assert resp.status_code == 404
+
+
+def test_npa_pdf_label_marks_unamended_original():
+    assert webapp._npa_pdf_label() == "PDF (документ без внесенных изменений)"
+
+
+def test_npa_docx_label_ebpi_with_amendments_includes_source_and_date():
+    from npa_pipeline.models import Result, Status
+
+    result = Result(
+        status=Status.FOUND,
+        ebpi_docx_path="/tmp/x.docx",
+        ebpi_docstate="Действует с изменениями",
+        ebpi_red_date="20260901",
+    )
+    assert webapp._npa_docx_label(result) == (
+        "DOCX (actual.pravo.gov.ru · Действует с изменениями от 01.09.2026г.)"
+    )
+
+
+def test_npa_docx_label_ebpi_unamended_has_source_without_redaction_date():
+    from npa_pipeline.models import Result, Status
+
+    result = Result(
+        status=Status.FOUND,
+        ebpi_docx_path="/tmp/x.docx",
+        ebpi_docstate="Действует без изменений",
+        ebpi_red_date="20230217",
+    )
+    assert webapp._npa_docx_label(result) == (
+        "DOCX (actual.pravo.gov.ru · Действует без изменений)"
+    )
+
+
+def test_npa_docx_label_text_layer_and_ips():
+    from npa_pipeline.models import Result, Status
+
+    text_layer = Result(status=Status.FOUND, text_layer_docx_path="/tmp/t.docx")
+    assert webapp._npa_docx_label(text_layer) == "DOCX (текстовый слой PDF)"
+
+    ips = Result(
+        status=Status.FOUND_TEXT_ONLY,
+        ips_nd="102000000",
+        ips_docx_path="/tmp/i.docx",
+        ips_state="Действует с изменениями",
+    )
+    assert webapp._npa_docx_label(ips) == (
+        "DOCX (ips.pravo.gov.ru · Действует с изменениями)"
+    )

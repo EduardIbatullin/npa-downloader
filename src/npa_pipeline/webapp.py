@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from npa_pipeline import burondt
+from npa_pipeline import ebpi
 from npa_pipeline.authorities import AuthorityCache
 from npa_pipeline.db import DEFAULT_DB_PATH, DocumentStore
 from npa_pipeline.docx_preview import render_docx_preview_html
@@ -19,7 +20,7 @@ from npa_pipeline.ocr_jobs import JobBusyError, OcrJobManager, OcrServiceUnavail
 from npa_pipeline.http_client import create_client
 from npa_pipeline.its import ItsCache
 from npa_pipeline.its_download import fetch_its, fetch_its_by_url_id
-from npa_pipeline.models import Query, parse_user_date
+from npa_pipeline.models import Query, Result, parse_user_date
 from npa_pipeline.naming import format_document_title, human_filename_stem
 from npa_pipeline.parse_citation import parse_citation
 from npa_pipeline.service import fetch_document
@@ -142,6 +143,29 @@ def _its_file_label(role: str, caption: str | None = None) -> str:
     if len(text) > 90:
         text = text[:87].rstrip() + "…"
     return text
+
+
+def _npa_pdf_label() -> str:
+    """PDF с publication.pravo.gov.ru — всегда исходная публикация без поправок
+    (текст с изменениями — в DOCX из EBPI, см. docs/ebpi-coverage.md)."""
+    return "PDF (документ без внесенных изменений)"
+
+
+def _npa_docx_label(result: Result) -> str:
+    """Подпись DOCX: источник + статус EBPI (с датой редакции, если «с изменениями»)."""
+    if result.ips_docx_path and result.ips_nd and not result.ebpi_docx_path and not result.text_layer_docx_path:
+        # Только резерв ips — PDF нет; источник уже в скобках (см. lookup_npa).
+        state = f" · {result.ips_state}" if result.ips_state else ""
+        return f"DOCX (ips.pravo.gov.ru{state})"
+    if result.ebpi_docx_path:
+        parts = ["actual.pravo.gov.ru"]
+        state = result.ebpi_docstate
+        if state:
+            if result.ebpi_red_date and "с изменениями" in state:
+                state = f"{state} от {ebpi.format_red_date(result.ebpi_red_date)}г."
+            parts.append(state)
+        return "DOCX (" + " · ".join(parts) + ")"
+    return "DOCX (текстовый слой PDF)"
 
 
 def _pack_its_files(files: list[dict]) -> list[dict]:
@@ -296,7 +320,7 @@ def _lookup_npa(q: str) -> dict:
     if result.pdf_path and result.eo_number:
         files.append(
             {
-                "label": "PDF",
+                "label": _npa_pdf_label(),
                 "role": "document",
                 "open_url": f"/api/pdf/{result.eo_number}",
                 "download_url": f"/api/pdf/{result.eo_number}?download=1",
@@ -308,7 +332,7 @@ def _lookup_npa(q: str) -> dict:
         # существует, текст отдаётся как .docx, см. npa_pipeline.ips_pravo.
         files.append(
             {
-                "label": "DOCX (ips.pravo.gov.ru)",
+                "label": _npa_docx_label(result),
                 "role": "document",
                 "open_url": f"/api/docx/{result.ips_nd}",
                 "download_url": f"/api/docx/{result.ips_nd}?download=1",
@@ -318,12 +342,10 @@ def _lookup_npa(q: str) -> dict:
     if (result.ebpi_docx_path or result.text_layer_docx_path) and result.eo_number:
         # EBPI или механическое извлечение текстового слоя (см. service.py,
         # _attach_ebpi_text/_attach_text_layer_docx) — текст уже есть рядом с
-        # PDF, но до сих пор не был доступен через веб-UI вообще (только
-        # ips_docx_path получил кнопку раньше) — тот же текст, что в
-        # ebpi_docstate, просто не было способа его открыть/скачать.
+        # PDF; подпись — источник + статус редакции (см. _npa_docx_label).
         files.append(
             {
-                "label": "DOCX" + (f" ({result.ebpi_docstate})" if result.ebpi_docstate else ""),
+                "label": _npa_docx_label(result),
                 "role": "document",
                 "open_url": f"/api/docx-text/{result.eo_number}",
                 "download_url": f"/api/docx-text/{result.eo_number}?download=1",
