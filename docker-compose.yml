@@ -27,4 +27,15 @@ services:
     # а не заменил его — нужно переопределить оба.
     entrypoint: ["uvicorn"]
     command: ["npa_ocr.server:app", "--host", "0.0.0.0", "--port", "8000"]
+    # host.docker.internal: доступ к Ollama (эскалация ИИ для текста под печатью/
+    # штампом, см. npa-ocr/docs/plan.md) — Ollama крутится в своём отдельном
+    # docker-compose проекте на хосте, порт 11434 опубликован на 0.0.0.0, но
+    # сервис ocr живёт в другой docker-сети и своего DNS-имени для хоста не
+    # имеет. host-gateway — спец-значение Docker (20.10+) для IP хоста из
+    # контейнера на Linux; на Docker Desktop (Win/Mac) host.docker.internal
+    # резолвится и без этой строки, но явное объявление не мешает.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434
     restart: unless-stopped
