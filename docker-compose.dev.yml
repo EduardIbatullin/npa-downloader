@@ -1,0 +1,25 @@
+# Дев-оверлей для сервиса ocr — подключает src соседнего репозитория npa-ocr
+# как том внутрь контейнера вместо того, что запечено в образ на этапе
+# `pip install -e` (см. npa-ocr/Dockerfile — editable-установка физически
+# читает пакет из /app/src, поэтому замена этой папки на хостовую работает).
+# Без этого файла правка кода npa-ocr требует полной пересборки образа
+# (60-500+ с, см. npa-ocr/docs/plan.md) на каждое изменение.
+#
+# Применяется ТОЛЬКО явным флагом — по умолчанию (`docker compose up`,
+# как на проде) этот файл не подключается, прод-парность не страдает:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d ocr
+#
+# --reload у uvicorn — чтобы HTTP-сервер (npa_ocr.server) подхватывал
+# изменения файлов без docker compose restart. На CLI-вызовы
+# (`docker exec ... python -m npa_ocr.cli ...`) это не влияет — каждый
+# вызов — новый процесс, том уже даёт ему свежий код без --reload.
+#
+# Требует, что npa-ocr лежит рядом с этим репозиторием (../npa-ocr) — так
+# же, как сейчас на nv-02.
+services:
+  ocr:
+    volumes:
+      - ../npa-ocr/src:/app/src
+    command:
+      ["npa_ocr.server:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
