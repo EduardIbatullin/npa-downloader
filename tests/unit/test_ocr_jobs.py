@@ -110,6 +110,28 @@ def test_get_polls_and_downloads_result_when_done(tmp_path: Path):
     assert final.docx_path == tmp_path / "ocr" / "doc.docx"
 
 
+def test_get_downloads_result_even_if_stale_file_already_exists_at_destination(tmp_path: Path):
+    """Регрессия (2026-10-23, Приказ №191): на диске уже лежит .docx от
+    ПРЕДЫДУЩЕГО запуска распознавания того же документа (тот же eo_number/
+    имя файла). Новое задание должно всё равно скачать и перезаписать его
+    своим результатом, а не оставить старый файл только потому что
+    docx_path.is_file() был истинным ещё до скачивания."""
+    handler, _ = _running_then_done_handler(polls_before_done=1)
+    manager = _manager(tmp_path, handler)
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF")
+    stale_docx = tmp_path / "ocr" / "doc.docx"
+    stale_docx.parent.mkdir(parents=True)
+    stale_docx.write_bytes(b"old stale docx from a previous run")
+
+    job = manager.start(pdf)
+    final = manager.get(job.job_id)
+
+    assert final.to_dict()["status"] == "done"
+    assert final.to_dict()["docx_ready"] is True
+    assert final.docx_path.read_bytes() == b"fake docx content"
+
+
 def test_get_unknown_job_id_returns_none_without_network_call(tmp_path: Path):
     def _should_not_be_called(request: httpx.Request) -> httpx.Response:
         raise AssertionError("не должно быть сетевого вызова для незнакомого job_id")

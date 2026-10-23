@@ -72,6 +72,16 @@ class OcrJob:
     job_id: str
     docx_path: Path
     _status: dict[str, Any] = field(default_factory=dict)
+    downloaded: bool = False
+    """Результат ЭТОГО задания уже скачан (см. OcrJobManager._download_result).
+    Не путать с docx_path.is_file() — по тому же имени документа на диске может
+    лежать .docx от ПРЕДЫДУЩЕГО запуска распознавания (тот же eo_number,
+    перезапустили после фикса) ещё до того, как текущее задание его перезапишет;
+    тогда is_file() истинно, а этот флаг — ещё нет. Баг в проверке именно по
+    is_file() приводил к тому, что новый, уже готовый результат не скачивался
+    и не перезаписывал старый файл — пользователь получал устаревший .docx,
+    хотя сервис распознал документ заново и правильно (обнаружено 2026-10-23
+    на Приказе №191 после фикса TATR-детекции)."""
 
     @property
     def status(self) -> str:
@@ -87,7 +97,7 @@ class OcrJob:
         return {
             "job_id": self.job_id,
             "status": self.status,
-            "docx_ready": self.status == "done" and self.docx_path.is_file(),
+            "docx_ready": self.status == "done" and self.downloaded,
             "percent": self._status.get("percent"),
             "page": self._status.get("page"),
             "total_pages": self._status.get("total_pages"),
@@ -180,20 +190,23 @@ class OcrJobManager:
 
     def _refresh(self, job: OcrJob) -> None:
         """Опрашивает статус задания в сервисе; если он стал "done" — сразу же
-        скачивает результат (см. _download_result), если ещё не скачан."""
+        скачивает результат (см. _download_result), если ещё не скачан именно
+        для этого задания (job.downloaded — см. его докстринг; не проверка
+        docx_path.is_file(), на диске может лежать файл от предыдущего запуска)."""
         try:
             resp = self._client.get(f"{self.service_url}/jobs/{job.job_id}")
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise OcrServiceUnavailableError(str(exc)) from exc
         job._status = resp.json()
-        if job._status.get("status") == "done" and not job.docx_path.is_file():
+        if job._status.get("status") == "done" and not job.downloaded:
             self._download_result(job)
 
     def _download_result(self, job: OcrJob) -> None:
         resp = self._client.get(f"{self.service_url}/jobs/{job.job_id}/result")
         resp.raise_for_status()
         job.docx_path.write_bytes(resp.content)
+        job.downloaded = True
 
     def close(self) -> None:
         """Закрывает HTTP-клиент, если им владеет этот менеджер (не передан
