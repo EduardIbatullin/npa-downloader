@@ -23,6 +23,7 @@ from npa_pipeline.its_download import fetch_its, fetch_its_by_url_id
 from npa_pipeline.models import Query, Result, parse_user_date
 from npa_pipeline.naming import format_document_title, human_filename_stem
 from npa_pipeline.parse_citation import parse_citation
+from npa_pipeline import server_monitor
 from npa_pipeline.service import fetch_document
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -404,6 +405,17 @@ def _lookup_npa(q: str) -> dict:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/monitor")
+def monitor_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "monitor.html")
+
+
+@app.get("/api/monitor")
+def api_monitor() -> dict:
+    """Ресурсы сервера (CPU/RAM/диск/GPU/модели Ollama) и живость сервисов — см. server_monitor."""
+    return server_monitor.snapshot(DEFAULT_OUT, ocr_url=ocr_jobs.service_url)
 
 
 @app.get("/api/health")

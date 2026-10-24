@@ -12,6 +12,25 @@ services:
     environment:
       # Имя сервиса ocr — DNS внутри сети, которую создаёт compose (см. ниже).
       - OCR_SERVICE_URL=http://ocr:8000
+      # Монитор ресурсов (/monitor): какие модели Ollama держат VRAM — см.
+      # server_monitor.py и extra_hosts у сервиса ocr ниже (тот же приём).
+      - OLLAMA_URL=http://host.docker.internal:11434
+      # Имя хоста в заголовке монитора: внутри контейнера hostname — ID контейнера.
+      # Задаётся в .env на сервере (MONITOR_HOSTNAME=nv-02), как и WEB_PORT.
+      - MONITOR_HOSTNAME=${MONITOR_HOSTNAME:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Монитор ресурсов: nvidia-smi внутри контейнера. Capability только `utility` —
+    # NVIDIA runtime даёт читать статистику GPU, но не считать на нём (VRAM web
+    # не занимает). На машине без NVIDIA-драйвера/toolkit compose откажется
+    # стартовать web — уберите этот блок локально; монитор покажет «GPU недоступен».
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [utility]
     depends_on:
       - ocr
     restart: unless-stopped

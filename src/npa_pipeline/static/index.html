@@ -11,10 +11,25 @@
 </head>
 <body>
   <div class="page page-check">
+    <div class="mini-mon" id="mini-mon">
+      <button type="button" class="mini-mon-btn" aria-expanded="false" aria-controls="mini-mon-pop" aria-label="Ресурсы сервера">
+        <span class="dot"></span>
+        <span class="mm-g" data-k="cpu" data-label="CPU"><span class="mm-l">CPU</span><span class="mm-bar"><i></i></span></span>
+        <span class="mm-g" data-k="ram" data-label="RAM"><span class="mm-l">RAM</span><span class="mm-bar"><i></i></span></span>
+        <span class="mm-g" data-k="gpu" data-label="GPU"><span class="mm-l">GPU</span><span class="mm-bar"><i></i></span></span>
+        <span class="mm-g" data-k="vram" data-label="VRAM"><span class="mm-l">VRAM</span><span class="mm-bar"><i></i></span></span>
+      </button>
+      <div class="mini-mon-pop" id="mini-mon-pop" role="dialog" aria-label="Системные ресурсы">
+        <div class="mm-title">Системные ресурсы</div>
+        <div class="mm-row"><span>загрузка…</span></div>
+      </div>
+    </div>
+
     <header class="header header-centered">
       <p class="eyebrow">Проверка API</p>
       <h1>NPA Pipeline</h1>
       <p class="lede">Поиск НПА или ИТС/НДТ по названию · скачивание через тот же API, что CLI</p>
+      <p class="nav-link"><a href="/monitor">Ресурсы сервера →</a></p>
     </header>
 
     <main class="layout layout-single">
@@ -49,5 +64,6 @@
     </main>
   </div>
   <script src="/static/app.js"></script>
+  <script src="/static/mini-monitor.js"></script>
 </body>
 </html>

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ресурсы сервера — NPA Pipeline</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="page page-monitor">
+    <header class="header">
+      <div>
+        <p class="eyebrow"><a href="/">← NPA Pipeline</a></p>
+        <h1>Ресурсы сервера <span id="hostname" class="mon-host"></span></h1>
+        <p class="lede">CPU, память, диск, GPU и загруженные модели Ollama · обновление каждые 3 с</p>
+      </div>
+      <div class="status-box" id="mon-status">
+        <span class="dot"></span>
+        <span id="mon-status-text">загрузка…</span>
+      </div>
+    </header>
+
+    <main class="mon-grid">
+      <section class="panel mon-card">
+        <h2>CPU</h2>
+        <div class="mon-big"><span id="cpu-pct">—</span><span class="mon-unit">%</span></div>
+        <div class="mon-sub" id="cpu-sub"></div>
+        <svg class="spark" id="cpu-spark" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
+        <div class="mon-cores" id="cpu-cores"></div>
+      </section>
+
+      <section class="panel mon-card">
+        <h2>Память</h2>
+        <div class="mon-big"><span id="mem-pct">—</span><span class="mon-unit">%</span></div>
+        <div class="mon-sub" id="mem-sub"></div>
+        <div class="meter"><div class="meter-bar" id="mem-bar"></div></div>
+        <svg class="spark" id="mem-spark" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
+        <div class="mon-sub" id="swap-sub"></div>
+      </section>
+
+      <section class="panel mon-card">
+        <h2>Диск</h2>
+        <div class="mon-big"><span id="disk-pct">—</span><span class="mon-unit">%</span></div>
+        <div class="mon-sub" id="disk-sub"></div>
+        <div class="meter"><div class="meter-bar" id="disk-bar"></div></div>
+        <div class="mon-note" id="disk-note"></div>
+      </section>
+
+      <section class="panel mon-card" id="gpu-card">
+        <h2>GPU</h2>
+        <div id="gpu-body" class="mon-sub">—</div>
+      </section>
+
+      <section class="panel mon-card mon-wide">
+        <h2>Модели в Ollama <span class="mon-h2-note" id="ollama-url"></span></h2>
+        <div id="ollama-body" class="mon-sub">—</div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/monitor.js"></script>
+</body>
+</html>
