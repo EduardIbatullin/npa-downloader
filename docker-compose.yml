@@ -57,4 +57,74 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - OLLAMA_URL=http://host.docker.internal:11434
+      # Таблицы сканов — DeepSeek-OCR в vLLM на GPU (~7 с на страницу вместо 3–9 мин у TATR на CPU,
+      # см. npa-ocr/src/npa_ocr/vlm_tables.py). Через шлюз vlm-gate: он поднимает vLLM по первому
+      # запросу и гасит после простоя. vLLM не поднялся — npa-ocr сам переходит на tatr.
+      - NPA_OCR_TABLE_ENGINE=vlm
+      - VLLM_URL=http://vlm-gate:8000/v1
+    depends_on:
+      - vlm-gate
     restart: unless-stopped
+
+  # Шлюз перед vLLM (npa-ocr/src/npa_ocr/vlm_gate.py, тот же образ npa-ocr). GPU на nv-02 одна на
+  # всех, а vLLM держит ~10 ГБ видеопамяти, пока запущен: шлюз запускает контейнер vlm по первому
+  # запросу (холодный старт ~2–3 мин) и останавливает после VLM_IDLE_MIN минут без запросов.
+  # docker.sock нужен ровно для start/stop контейнера npa-vlm — но даёт контейнеру права root на
+  # хосте; шлюз не публикует порт наружу и доступен только из сети этого compose.
+  vlm-gate:
+    image: npa-ocr:latest
+    entrypoint: ["python", "-m", "npa_ocr.vlm_gate"]
+    environment:
+      - VLM_CONTAINER=npa-vlm
+      - VLM_UPSTREAM=http://vlm:8000
+      - VLM_IDLE_MIN=${VLM_IDLE_MIN:-10}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  # vLLM с DeepSeek-OCR. Запускает и останавливает его шлюз vlm-gate; после `docker compose up`
+  # он стартует сам и гасится шлюзом через VLM_IDLE_MIN минут, если работы нет. restart: "no" —
+  # иначе docker поднимал бы его после перезагрузки хоста и держал GPU впустую.
+  # Флаги — из спайка npa-vlm-ocr (README): память задана явно (--kv-cache-memory-bytes), без
+  # замера свободной — GPU общая; prefix/mm-кэши выключены (каждая страница новая).
+  vlm:
+    image: vllm/vllm-openai:v0.32.0
+    container_name: npa-vlm
+    command:
+      - deepseek-ai/DeepSeek-OCR
+      - --served-model-name
+      - deepseek-ocr
+      - --no-enable-prefix-caching
+      - --mm-processor-cache-gb
+      - "0"
+      - --gpu-memory-utilization
+      - "0.42"
+      - --kv-cache-memory-bytes
+      - "3221225472"
+      - --max-model-len
+      - "8192"
+    environment:
+      # модель уже в кэше (VLM_HF_CACHE), в сеть не ходить
+      - HF_HUB_OFFLINE=1
+      # без этого Triton-ядро vLLM 0.32 падает на глобальной LOG2E (README спайка npa-vlm-ocr)
+      - TRITON_ALLOW_NON_CONSTEXPR_GLOBALS=1
+    volumes:
+      # Кэш Hugging Face с весами deepseek-ai/DeepSeek-OCR (~6,7 ГБ). На nv-02 в .env:
+      # VLM_HF_CACHE=/home/eduard/npa-vlm-ocr/hf-cache (уже скачано в спайке — не дублировать)
+      - ${VLM_HF_CACHE:-./vlm-cache/huggingface}:/root/.cache/huggingface
+      # кэш компиляции vLLM (torch.compile) — переживает пересоздание контейнера
+      - ./vlm-cache/vllm:/root/.cache/vllm
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # явные устройства — обход потери GPU после `systemctl daemon-reload` (см. web выше)
+    devices:
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+      - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
+    restart: "no"
