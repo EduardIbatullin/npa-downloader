@@ -101,3 +101,14 @@ def test_ocr_status_route_reports_running_then_done(tmp_path: Path, monkeypatch)
     assert status.status_code == 200
     assert status.json()["status"] == "done"
     assert status.json()["docx_ready"] is True
+
+
+def test_authority_from_title_for_ministry_orders():
+    """Орган для npa-ocr: у приказа министерства — министерство в именительном падеже (шапка под
+    краем штампа Минюста дописывается по нему)."""
+    title = ('Приказ Министерства природных ресурсов и экологии Российской Федерации от 31.08.2023 № 565'
+             '<br /> "Об утверждении нормативного документа"')
+    assert webapp._authority_from_title(title) == "Министерство природных ресурсов и экологии Российской Федерации"
+    assert webapp._authority_from_title("Постановление Правительства Российской Федерации от 15.09.2020 № 1430") == (
+        "Правительство Российской Федерации")
+    assert webapp._authority_from_title("Приказ Росстандарта от 29.09.2025 № 2095") is None

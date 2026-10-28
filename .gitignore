@@ -38,3 +38,5 @@ smoke/
 *.bak_*
 cache/
 ocr_scratch/
+# кэши vLLM (веса моделей, компиляция) — см. сервис vlm в docker-compose.yml
+vlm-cache/
