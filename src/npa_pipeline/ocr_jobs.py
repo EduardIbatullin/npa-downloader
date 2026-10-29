@@ -1,15 +1,12 @@
-"""Фоновые задания распознавания для веб-приложения — HTTP-клиент к сервису
-npa-ocr (отдельный проект, свой образ, свой контейнер; адрес — OCR_SERVICE_URL,
-см. docs/ocr-integration.md).
+"""Фоновые задания распознавания: HTTP-клиент сервиса npa-ocr.
 
-Сервис сам управляет тяжёлыми моделями и ограничением «одно задание
-одновременно» (вернёт 409, если занят) — здесь только: отправить PDF
-(multipart), опросить прогресс (`GET /jobs/{id}`), скачать готовый .docx
-(`GET /jobs/{id}/result`) в out_root/ocr, когда статус стал "done".
+npa-ocr — отдельный сервис (адрес — ``OCR_SERVICE_URL``, см.
+docs/ocr-integration.md). Модели и ограничение «одно задание одновременно» —
+на его стороне (занятый сервис отвечает 409). Клиент отправляет PDF, опрашивает
+ход задания и скачивает готовый .docx в ``out_root/ocr``.
 
-count_scan_pages() — отдельная, не часть этого клиента: механическая проверка
-текстового слоя (pypdf) для надписи «N страниц без текстового слоя» в карточке
-НПА, не требует обращения к сервису.
+:func:`count_scan_pages` проверяет текстовый слой PDF локально, без обращения к
+сервису.
 """
 
 from __future__ import annotations
@@ -23,16 +20,14 @@ import httpx
 
 DEFAULT_SERVICE_URL = "http://localhost:8000"
 
-# Должно совпадать с DEFAULT_MIN_PAGE_TEXT_CHARS в npa-ocr (src/npa_ocr/ocr.py) —
-# именно по этому порогу npa-ocr решает, распознавать страницу или взять текстовый
-# слой как есть. Это текстовая константа внешнего контракта, не импорт: npa-downloader
-# намеренно не зависит от пакета npa-ocr.
+# Совпадает с DEFAULT_MIN_PAGE_TEXT_CHARS npa-ocr: по этому порогу он решает, распознавать
+# страницу или взять текстовый слой. Константа повторена, потому что npa-downloader не
+# зависит от пакета npa-ocr.
 DEFAULT_MIN_PAGE_TEXT_CHARS = 20
 
 
 class JobBusyError(RuntimeError):
-    """Сервис npa-ocr уже выполняет другое задание (разрешено только одно
-    одновременно — тяжёлые модели в памяти, см. его README)."""
+    """Сервис npa-ocr уже выполняет другое задание; одновременно разрешено одно."""
 
     def __init__(self) -> None:
         super().__init__("Уже выполняется распознавание. Дождитесь окончания.")
@@ -62,38 +57,30 @@ def count_scan_pages(pdf_path: Path | str) -> tuple[int, int]:
 
 @dataclass
 class OcrJob:
-    """Локальное отражение состояния удалённого задания — то, что видит веб-UI.
+    """Состояние задания сервиса npa-ocr.
 
-    _status — сырой JSON последнего опроса сервиса (см. OcrJobManager._refresh);
-    хранится как есть, не разбирается на отдельные поля датакласса, чтобы формат
-    не дублировался и не расходился с тем, что реально отдаёт сервис.
+    ``_status`` — JSON последнего опроса сервиса как есть, чтобы не дублировать
+    его формат.
     """
 
     job_id: str
     docx_path: Path
     _status: dict[str, Any] = field(default_factory=dict)
     downloaded: bool = False
-    """Результат ЭТОГО задания уже скачан (см. OcrJobManager._download_result).
-    Не путать с docx_path.is_file() — по тому же имени документа на диске может
-    лежать .docx от ПРЕДЫДУЩЕГО запуска распознавания (тот же eo_number,
-    перезапустили после фикса) ещё до того, как текущее задание его перезапишет;
-    тогда is_file() истинно, а этот флаг — ещё нет. Баг в проверке именно по
-    is_file() приводил к тому, что новый, уже готовый результат не скачивался
-    и не перезаписывал старый файл — пользователь получал устаревший .docx,
-    хотя сервис распознал документ заново и правильно (обнаружено 2026-10-23
-    на Приказе №191 после фикса TATR-детекции)."""
+    """Результат этого задания уже скачан.
+
+    Это не то же, что ``docx_path.is_file()``: под тем же именем может лежать
+    .docx предыдущего распознавания того же документа, и проверка по файлу
+    оставила бы его вместо нового результата.
+    """
 
     @property
     def status(self) -> str:
-        """Прямой доступ к статусу (как у старого, subprocess-based OcrJob) —
-        для кода вне этого модуля, который не ходит через to_dict() целиком
-        (см. webapp.py, api_ocr_docx)."""
+        """Статус задания: ``running``, ``done``, ``failed`` или ``cancelled``."""
         return self._status.get("status", "running")
 
     def to_dict(self) -> dict[str, Any]:
-        """Снимок состояния для JSON-ответа веб-API (/api/ocr/jobs/{job_id}) —
-        та же форма, что была у старого (subprocess-based) OcrJob, фронтенд не
-        меняется."""
+        """Состояние задания для ответа ``GET /api/ocr/jobs/{job_id}``."""
         return {
             "job_id": self.job_id,
             "status": self.status,
@@ -113,8 +100,8 @@ class OcrJobManager:
     """Отправляет PDF в сервис npa-ocr и отслеживает задания через HTTP.
 
     Args:
-        out_root: корень для скачанных результатов; сами .docx пишутся в
-            out_root/ocr (как и раньше).
+        out_root: Корень для скачанных результатов; .docx пишутся в
+            ``out_root/ocr``.
         service_url: адрес сервиса npa-ocr; по умолчанию — переменная окружения
             OCR_SERVICE_URL (для docker-compose — имя сервиса в общей сети,
             например "http://ocr:8000"), иначе DEFAULT_SERVICE_URL (локальная
@@ -139,9 +126,12 @@ class OcrJobManager:
         self._jobs: dict[str, OcrJob] = {}
 
     def get(self, job_id: str) -> OcrJob | None:
-        """Возвращает задание с уже обновлённым статусом (см. _refresh), либо
-        None — такой job_id этот процесс не запускал (например, сервер
-        перезапускался — задания хранятся только в памяти)."""
+        """Возвращает задание с обновлённым статусом.
+
+        Returns:
+            Задание или None, если этот процесс его не запускал (задания
+            хранятся только в памяти и теряются при перезапуске).
+        """
         job = self._jobs.get(job_id)
         if job is not None:
             self._refresh(job)
@@ -179,9 +169,11 @@ class OcrJobManager:
         return job
 
     def cancel(self, job: OcrJob) -> None:
-        """Просит сервис остановить задание; сбой сети здесь не считается
-        ошибкой — просто задание продолжит идти, следующий опрос статуса
-        покажет его актуальное состояние."""
+        """Просит сервис остановить задание.
+
+        Сбой сети при отмене не считается ошибкой: следующий опрос покажет
+        состояние задания.
+        """
         try:
             self._client.post(f"{self.service_url}/jobs/{job.job_id}/cancel")
         except httpx.TransportError:
@@ -189,10 +181,11 @@ class OcrJobManager:
         self._refresh(job)
 
     def _refresh(self, job: OcrJob) -> None:
-        """Опрашивает статус задания в сервисе; если он стал "done" — сразу же
-        скачивает результат (см. _download_result), если ещё не скачан именно
-        для этого задания (job.downloaded — см. его докстринг; не проверка
-        docx_path.is_file(), на диске может лежать файл от предыдущего запуска)."""
+        """Опрашивает статус задания; готовый результат скачивает один раз.
+
+        Raises:
+            OcrServiceUnavailableError: Сервис недоступен или ответил ошибкой.
+        """
         try:
             resp = self._client.get(f"{self.service_url}/jobs/{job.job_id}")
             resp.raise_for_status()
@@ -203,13 +196,13 @@ class OcrJobManager:
             self._download_result(job)
 
     def _download_result(self, job: OcrJob) -> None:
+        """Скачивает .docx готового задания в ``job.docx_path``."""
         resp = self._client.get(f"{self.service_url}/jobs/{job.job_id}/result")
         resp.raise_for_status()
         job.docx_path.write_bytes(resp.content)
         job.downloaded = True
 
     def close(self) -> None:
-        """Закрывает HTTP-клиент, если им владеет этот менеджер (не передан
-        извне в конструктор — тогда закрытие не наша ответственность)."""
+        """Закрывает HTTP-клиент, если он создан менеджером, а не передан извне."""
         if self._owns_client:
             self._client.close()

@@ -1,4 +1,4 @@
-"""Алгоритм поиска документа (шаги 1–12 плана этапа 1)."""
+"""Поиск документа на publication.pravo.gov.ru по реквизитам."""
 
 from __future__ import annotations
 
@@ -102,7 +102,7 @@ def decide(
     query_date: date,
     diagnostics: list[DiagnosticHit] | None = None,
 ) -> Result:
-    """Выбирает статус результата по числу совпадений (шаги 9-10 плана этапа 1).
+    """Выбирает статус результата по числу совпадений.
 
     Returns:
         Result: FOUND при ровно одном совпадении; AMBIGUOUS при нескольких
@@ -141,6 +141,7 @@ def decide(
 
 
 def _diag_from_items(items: list[DocItem], candidates: list[str]) -> list[DiagnosticHit]:
+    """Находки для диагностики: документы органов вне списка кандидатов, без повторов."""
     candidate_set = set(candidates)
     hits: list[DiagnosticHit] = []
     seen: set[str] = set()
@@ -191,16 +192,14 @@ def search_document(
 ) -> Result:
     """Выполняет полный алгоритм поиска документа, без скачивания PDF.
 
-    Два уровня поиска (шаги плана этапа 1, см. docs/stage1-plan.md): сначала точный
-    номер (шаги 4-5), если нет совпадений — запасной поиск по цифровой части номера
-    (шаг 8, только если префикс достаточно длинный при нескольких органах-кандидатах
-    — иначе слишком широкий). Если орган резолвится в несколько GUID одновременно
-    (несовпадающих органов с похожим именем), фильтрация по подписанту идёт отдельным
-    проходом после подгрузки реквизитов (enrich_signatories), а не на уровне запроса
-    к API. При итоговом нулевом совпадении (шаг 11) собирается диагностика — что
-    нашлось по дате+номеру без фильтра по органу, чтобы объяснить пользователю,
-    почему документ не найден (не просто «ничего»), если сбор диагностики сам не
-    упадёт — тогда diagnostics просто останется пустым, status не меняется.
+    Сначала ищется точный номер, затем, если совпадений нет, — номер по
+    цифровой части (при нескольких органах-кандидатах — только для префикса от
+    трёх цифр, иначе выборка слишком широка). Если название органа
+    соответствует нескольким GUID, отбор по подписанту выполняется после
+    загрузки карточек (:func:`npa_pipeline.api.enrich_signatories`), а не в
+    запросе к API. Если документ не найден, собирается диагностика: документы
+    с той же датой и номером у других органов. Сбой при сборе диагностики
+    оставляет её пустой и не меняет статус.
 
     Args:
         query: должен содержать либо eo_number, либо number+date+(authority_guid
@@ -217,7 +216,7 @@ def search_document(
     if err:
         return Result(status=Status.INVALID_INPUT, message=err)
 
-    # Шаг 1: известен eoNumber
+    # известен eoNumber
     if query.eo_number:
         doc = pravo_api.get_document(client, query.eo_number)
         return Result(
@@ -229,7 +228,7 @@ def search_document(
 
     assert query.number is not None and query.date is not None
 
-    # Шаг 2: резолвинг
+    # органы-кандидаты
     candidates = cache.resolve(
         authority_guid=query.authority_guid,
         authority_name=query.authority_name,
@@ -238,7 +237,7 @@ def search_document(
     prefix = digit_prefix(query.number)
     single = len(candidates) == 1
 
-    # Шаги 4–5: точный запрос
+    # точный номер
     raw_exact = pravo_api.search_documents(
         client,
         number=number_for_request,
@@ -247,7 +246,7 @@ def search_document(
     )
 
     if single:
-        # Сервер уже отфильтровал по органу; не сужаем по основному GUID из списка
+        # сервер уже отобрал документы органа
         matched = apply_filters(
             raw_exact,
             target_date=query.date,
@@ -278,7 +277,7 @@ def search_document(
     if matched:
         return decide(matched, match_type=MatchType.EXACT, query_date=query.date)
 
-    # Шаг 8: запасной поиск по цифровой части
+    # запасной поиск по цифровой части номера
     fallback_raw: list[DocItem] = []
     fallback_ran = False
     if prefix and (single or len(prefix) >= 3):
@@ -321,7 +320,7 @@ def search_document(
         if matched:
             return decide(matched, match_type=MatchType.DIGITS_ONLY, query_date=query.date)
 
-    # Шаг 11: диагностика (сбой сети здесь не должен подменять not_found/out_of_range)
+    # диагностика; сбой сети здесь не должен менять not_found/out_of_range
     diagnostics: list[DiagnosticHit] = []
     if query.authority_name or query.authority_guid:
         try:

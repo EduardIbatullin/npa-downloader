@@ -1,4 +1,4 @@
-"""npa-pipeline: поиск и скачивание официальных НПА."""
+"""npa-pipeline: поиск и скачивание официальных нормативных правовых актов."""
 
 from npa_pipeline.models import MatchType, Query, Result, Status
 from npa_pipeline.parse_citation import ParsedCitation, parse_citation, query_from_citation

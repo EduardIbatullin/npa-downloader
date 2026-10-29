@@ -24,9 +24,8 @@ web = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
 ]
-# OCR вынесен в отдельный проект npa-ocr (https://github.com/EduardIbatullin/npa-ocr).
-# Для кнопки «Распознать скан» в веб-UI команда `npa-ocr` должна быть на PATH —
-# `pip install npa-ocr[models]` отдельно (пакет этого проекта её не тянет).
+# OCR — отдельный сервис npa-ocr (https://github.com/EduardIbatullin/npa-ocr), с которым
+# веб-приложение работает по HTTP (OCR_SERVICE_URL, см. docs/ocr-integration.md).
 
 [project.scripts]
 npa = "npa_pipeline.cli:main"

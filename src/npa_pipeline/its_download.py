@@ -38,6 +38,7 @@ _ROLE_LABEL = {
 
 
 def _sanitize_filename(text: str) -> str:
+    """Имя файла без знаков, запрещённых в Windows, и без точек и пробелов в конце."""
     text = _SPACES.sub(" ", text).strip()
     for ch in _WIN_FORBIDDEN:
         text = text.replace(ch, "_")
@@ -61,7 +62,8 @@ def _detect_file_kind(data: bytes, filename: str | None) -> tuple[str, str]:
 
 
 def _effective_role(role: str, kind: str, *, from_word_card: bool, caption: str | None = None) -> str:
-    # Подпись надёжнее сохранённой роли (в кэше могли остаться старые «document»).
+    """Роль файла с учётом подписи и формата: справочник в Word — ``document_word``."""
+    # подпись надёжнее роли, сохранённой в кэше
     if caption:
         role = burondt._classify_role(caption)
     if kind == "word" or from_word_card:

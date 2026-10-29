@@ -63,7 +63,7 @@ def _attach_ebpi_text(ebpi_client: httpx.Client, store: DocumentStore, result: R
     и отрицательный результат (документ не покрыт EBPI — так для большинства
     приказов, см. npa_pipeline.ebpi): иначе каждый повторный fetch_document бил бы в
     сеть заново за уже известным «нет». У отрицательного результата TTL
-    (ebpi.NEGATIVE_CACHE_TTL_DAYS, сейчас 21 день) — EBPI индексирует свежие
+    (ebpi.NEGATIVE_CACHE_TTL_DAYS) — EBPI индексирует свежие
     документы не мгновенно (см. docs/ebpi-coverage.md, «Задержка индексации»), и без
     TTL документ, скачанный в день публикации, мог бы навсегда остаться помеченным
     «не покрыт», даже когда EBPI его позже проиндексирует.

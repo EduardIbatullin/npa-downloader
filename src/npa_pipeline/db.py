@@ -213,8 +213,10 @@ def resolve_db_path(db_path: str | Path = DEFAULT_DB_PATH) -> Path:
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
-    """Открывает соединение с `PRAGMA foreign_keys = ON` — FK в SCHEMA реально
-    проверяются (не просто декларативны), см. record_file/record_ebpi/record_relation."""
+    """Открывает соединение с ``PRAGMA foreign_keys = ON``.
+
+    Внешние ключи схемы проверяются SQLite, а не только объявлены.
+    """
     path = resolve_db_path(db_path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -225,9 +227,8 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     """Создаёт таблицы (CREATE TABLE IF NOT EXISTS) и докатывает старые базы.
 
-    Идемпотентно — безопасно вызывать на каждое открытие БД. Миграция ALTER TABLE
-    ниже нужна только для баз, созданных до того, как у authorities появилось
-    поле weight — на новых базах колонка уже есть из SCHEMA, ветка не сработает.
+    Вызов идемпотентен и выполняется при каждом открытии БД. В базу без колонки
+    ``authorities.weight`` она добавляется.
     """
     conn.executescript(SCHEMA)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(authorities)")}
@@ -237,7 +238,11 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 
 class DocumentStore:
-    """Запись и чтение документов / файлов в единой БД."""
+    """Запись и чтение документов и файлов в единой БД.
+
+    Args:
+        db_path: Путь к базе.
+    """
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self.db_path = resolve_db_path(db_path)
@@ -245,6 +250,7 @@ class DocumentStore:
             init_schema(conn)
 
     def _connect(self) -> sqlite3.Connection:
+        """Соединение с базой."""
         return connect(self.db_path)
 
     def upsert_from_card(self, card: dict[str, Any]) -> str:
@@ -452,7 +458,7 @@ class DocumentStore:
         Raises:
             ValueError: eo_number не найден в documents (FK) — карточка документа
                 должна быть сохранена (upsert_from_card/upsert_from_doc_item)
-                раньше, чем его файл.
+                до записи файла.
         """
         now = utc_now_iso()
         path_str = str(file_path)
@@ -712,6 +718,7 @@ class DocumentStore:
         return [dict(row) for row in rows]
 
     def get_document_row(self, eo_number: str) -> dict[str, Any] | None:
+        """Строка документа с подписантами (основной первым) или None."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM documents WHERE eo_number = ?",
@@ -734,9 +741,11 @@ class DocumentStore:
             return data
 
     def count_documents(self) -> int:
+        """Число документов в базе."""
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
 
     def count_files(self) -> int:
+        """Число скачанных файлов документов."""
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM document_files").fetchone()[0])

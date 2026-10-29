@@ -1,8 +1,9 @@
-"""Локальный кэш карточек ИТС/НДТ (SQLite).
+"""Локальный кэш карточек справочников ИТС НДТ (SQLite).
 
-Обход диапазона UrlId burondt.ru и резолвинг обозначения → url_id. Мирроринг
-AuthorityCache: самоинициализация схемы, чистый upsert (без удаления строк),
-контракт resolve() — 0/1/много кандидатов.
+Обход диапазона ``UrlId`` burondt.ru и поиск ``url_id`` по обозначению. Устроен
+как :class:`npa_pipeline.authorities.AuthorityCache`: схема создаётся при
+открытии, записи только добавляются и обновляются, ``resolve()`` возвращает
+ноль, одного или нескольких кандидатов.
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ from npa_pipeline.http_client import BURONDT_PAGE_PAUSE_SECONDS
 from npa_pipeline.models import utc_now_iso
 from npa_pipeline.normalize import normalize_number
 
-_LOWER_BOUND = 10  # UrlId 1-9 пустые, см. docs/stage1-plan.md «Калиброванный диапазон»
-_BACK_MARGIN = 20  # запас назад от сохранённой границы — вдруг дозаполнили старые id
+_LOWER_BOUND = 10  # UrlId 1–9 на burondt.ru пустые
+_BACK_MARGIN = 20  # запас назад от сохранённой границы: старые UrlId могут дозаполниться
 
 # «НДТ» — необязательное слово в «Обозначении» некоторых карточек (см. resolve),
 # поэтому и извлечение базового номера, и распознавание «голого» запроса-номера
@@ -118,7 +119,11 @@ def _extract_year(designation_norm: str, order_dates: list[str | None]) -> str |
 
 
 class ItsCache:
-    """Кэш карточек ИТС/НДТ в единой SQLite-базе проекта."""
+    """Кэш карточек ИТС НДТ в единой SQLite-базе проекта.
+
+    Args:
+        db_path: Путь к базе.
+    """
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self.db_path = resolve_db_path(db_path)
@@ -126,6 +131,7 @@ class ItsCache:
             init_schema(conn)
 
     def _connect(self):
+        """Соединение с базой."""
         return connect(self.db_path)
 
     def upsert_card(self, card: burondt.ItsCard) -> None:
@@ -193,6 +199,7 @@ class ItsCache:
             conn.commit()
 
     def _get_crawl_state(self, key: str) -> str | None:
+        """Значение состояния обхода или None."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT value FROM its_crawl_state WHERE key = ?", (key,)
@@ -200,6 +207,7 @@ class ItsCache:
             return row["value"] if row else None
 
     def _save_crawl_state(self, key: str, value: str) -> None:
+        """Сохраняет значение состояния обхода."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -225,15 +233,13 @@ class ItsCache:
         т.п. — тот же диапазон UrlId), пропускаются.
 
         Args:
-            full_rescan: True — принудительно с UrlId=10, весь диапазон целиком.
-                По умолчанию (False) — инкрементально от (сохранённая верхняя
-                граница − _BACK_MARGIN): полный обход — это ~2550 последовательных
-                запросов, повторять их все ради нескольких новых карточек
-                расточительно и невежливо к чужому серверу.
-            max_requests: чанкование первого полного прогона — без этого лимита
-                это один непрерывный запуск на ~2550 запросов, который неудобно (и
-                рискованно) гонять одной командой; прогресс сохраняется в
-                its_crawl_state, следующий вызов продолжает с того же места.
+            full_rescan: Обойти весь диапазон с начала. По умолчанию обход
+                продолжается от сохранённой верхней границы минус
+                ``_BACK_MARGIN``: полный обход — около 2550 запросов, и
+                повторять их ради нескольких новых карточек незачем.
+            max_requests: Наибольшее число запросов за вызов, чтобы делить
+                полный обход на части. Положение сохраняется в
+                ``its_crawl_state``, следующий вызов продолжает с него.
             confirm_empty_run: сколько подряд пустых UrlId подтверждают конец
                 диапазона (не просто случайный пропуск), прежде чем обход
                 остановится.
@@ -290,11 +296,9 @@ class ItsCache:
             url_id += 1
 
         self._save_crawl_state("last_upper_bound", str(last_non_empty))
-        # В отличие от last_upper_bound (просто «докуда дошли», пишется и при
-        # усечении max_requests), confirmed_upper_bound пишется только здесь — это
-        # значит, что long confirm_empty_run реально сработал и граница подтверждена,
-        # а не просто оборвана лимитом запросов. Только этому значению можно доверять
-        # как знаменателю для процента прогресса (см. webapp.py, /api/health).
+        # last_upper_bound — докуда дошёл обход (пишется и при остановке по max_requests);
+        # confirmed_upper_bound — только когда конец диапазона подтверждён серией пустых
+        # карточек. По нему считается процент хода обхода (webapp, /api/health).
         self._save_crawl_state("confirmed_upper_bound", str(last_non_empty))
         return {
             "scanned": scanned,
@@ -307,15 +311,15 @@ class ItsCache:
         }
 
     def range_lower_bound(self) -> int:
+        """Нижняя граница диапазона UrlId."""
         return _LOWER_BOUND
 
     def range_upper_bound_confirmed(self) -> int | None:
         """Возвращает верхнюю границу диапазона UrlId, подтверждённую полным обходом.
 
         Returns:
-            UrlId, после которого шёл long confirm_empty_run пустых подряд в прошлом
-            полном прогоне refresh(). None — такого прогона ещё не было (тогда
-            процент прогресса неизвестен, см. webapp.py).
+            UrlId, после которого при обходе ``refresh()`` шла серия пустых
+            карточек. None — обход ещё ни разу не дошёл до конца диапазона.
         """
         saved = self._get_crawl_state("confirmed_upper_bound")
         return int(saved) if saved else None
@@ -326,29 +330,22 @@ class ItsCache:
         Простой LIKE-поиск подстроки здесь не годится: «итс53» как подстрока
         совпал бы и с «итс530-2019», и с «итс531-2018» — другими номерами.
 
-        Фолбэк на подпись приказа: поле «Обозначение» карточки на burondt.ru не
-        всегда содержит год (см. docs/stage1-plan.md, «Поле Обозначение не всегда
-        содержит год»), поэтому запрос с годом может не совпасть с самим
-        «Обозначением», хотя документ в кэше есть. Полное обозначение с годом почти
-        всегда всё равно присутствует в подписи файла приказа («... об утверждении
-        ИТС NN-YYYY») — если по «Обозначению» ничего не нашлось, ищем совпадение
-        там. Сравнение — через ту же нормализацию, что и designation_norm (в
-        Python, не SQL LIKE/LOWER), потому что встроенный LOWER() в SQLite не
-        приводит кириллицу к нижнему регистру, и сравнение по нему тихо не
-        сработало бы.
+        Поле «Обозначение» на burondt.ru не всегда содержит год, поэтому
+        запрос с годом может с ним не совпасть. Если по «Обозначению» ничего не
+        нашлось, совпадение ищется в подписи файла приказа («… об утверждении
+        ИТС NN-YYYY»). Сравнение выполняется в Python: ``LOWER()`` в SQLite не
+        переводит кириллицу в нижний регистр.
 
         Args:
-            designation: обозначение или фраза с ним (см. extract_its_designation),
-                год («2021») или «голый» номер («ИТС 53») — см. Returns.
+            designation: Обозначение или фраза с ним (см.
+                :func:`extract_its_designation`), год («2021») или номер без
+                года («ИТС 53»).
 
         Returns:
-            Список url_id — по образцу AuthorityCache.resolve: 0 (не найдено), 1
-            (точное совпадение) или много. Если designation — это просто год
-            (4 цифры, без букв), это отдельный вид запроса — «покажи все версии
-            ИТС за такой-то год», не поиск конкретного документа (см.
-            resolve_by_year). Если designation — «ИТС <номер>» без года (например
-            «ИТС 53»), это тоже не поиск одного документа, а «покажи все версии
-            этого номера по годам» (см. resolve_by_number).
+            Список url_id: пустой — не найдено, один — точное совпадение,
+            несколько — неоднозначно. Год возвращает все справочники этого года
+            (:meth:`resolve_by_year`), номер без года — все его версии
+            (:meth:`resolve_by_number`).
         """
         if not designation or not designation.strip():
             return []
@@ -397,12 +394,8 @@ class ItsCache:
     def resolve_by_year(self, year: str) -> list[int]:
         """Возвращает все url_id ИТС за указанный год.
 
-        Год ищем в двух местах, т.к. «Обозначение» не всегда его содержит (см.
-        resolve): как суффикс «-YYYY» в designation_norm и как подстроку в дате
-        приказа (order_date_caption) — эта дата у карточки есть независимо от
-        формата «Обозначения». Подстрочный поиск 4-значного года в дате достаточно
-        надёжен — случайное совпадение с другим числом в этом коротком текстовом
-        поле маловероятно.
+        «Обозначение» не всегда содержит год, поэтому год ищется и как суффикс
+        «-YYYY» обозначения, и в дате приказа (``order_date_caption``).
 
         Args:
             year: год как строка из 4 цифр; любой другой формат даёт пустой список.
@@ -436,10 +429,8 @@ class ItsCache:
             number: базовый номер ИТС без года, например «53».
 
         Returns:
-            url_id всех версий, новые версии — первыми. Год каждой версии для
-            сортировки берётся тем же способом, что и в resolve/resolve_by_year (из
-            «Обозначения» или, если там года нет, из даты приказа); версии с
-            неизвестным годом уходят в конец списка, а не мешаются между известными.
+            url_id всех версий, новые первыми. Год берётся из «Обозначения» или
+            из даты приказа; версии с неизвестным годом идут в конце.
         """
         with self._connect() as conn:
             docs = conn.execute(
@@ -476,6 +467,7 @@ class ItsCache:
                     dated.append((row["url_id"], year))
 
         def sort_key(item: tuple[int, str | None]) -> tuple[int, int, int]:
+            """Сначала известный год по убыванию, затем неизвестный."""
             url_id, year = item
             if year is None:
                 return (1, 0, url_id)
@@ -514,6 +506,7 @@ class ItsCache:
         return sorted(related)
 
     def list_files(self, url_id: int) -> list[dict[str, Any]]:
+        """Файлы карточки по возрастанию ``file_id``."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM its_files WHERE url_id = ? ORDER BY file_id",
@@ -522,8 +515,7 @@ class ItsCache:
             return [dict(r) for r in rows]
 
     def get_file_record(self, file_id: int) -> dict[str, Any] | None:
-        """Возвращает запись о скачанном файле (its_document_files), либо None,
-        если этот file_id ещё не скачивался."""
+        """Запись о скачанном файле (``its_document_files``) или None."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM its_document_files WHERE file_id = ?", (file_id,)
@@ -541,7 +533,7 @@ class ItsCache:
     ) -> None:
         """Регистрирует скачанный файл в its_document_files.
 
-        Как DocumentStore.record_file — тот же паттерн.
+        Устроен так же, как :meth:`npa_pipeline.db.DocumentStore.record_file`.
 
         Raises:
             ValueError: file_id не существует в its_files (FK) — значит, карточка
@@ -572,9 +564,11 @@ class ItsCache:
             conn.commit()
 
     def count_its_documents(self) -> int:
+        """Число карточек ИТС в кэше."""
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM its_documents").fetchone()[0])
 
     def count_its_files(self) -> int:
+        """Число файлов карточек ИТС в кэше."""
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM its_files").fetchone()[0])

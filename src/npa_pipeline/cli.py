@@ -1,4 +1,4 @@
-"""Тонкий CLI поверх библиотеки."""
+"""Командная строка ``npa``: поиск и скачивание НПА и справочников ИТС."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def cmd_fetch_its(args: argparse.Namespace) -> int:
 
 
 def cmd_import_json(args: argparse.Namespace) -> int:
-    """Обработчик `npa import-json` — переносит старые JSON-sidecar из downloads/ в БД."""
+    """Обработчик ``npa import-json``: переносит JSON-файлы сведений о загрузках в БД."""
     store = DocumentStore(args.db)
     stats = import_json_sidecars(
         args.out_dir,

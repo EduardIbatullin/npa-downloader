@@ -41,7 +41,7 @@ function fmtUntil(iso) {
   return sec >= 60 ? `${Math.floor(sec / 60)} мин ${sec % 60} с` : `${sec} с`;
 }
 
-// Порог цвета: ≥ warn — жёлтый, ≥ err — красный (диск 95% на nv-02 должен бросаться в глаза)
+// Порог цвета: ≥ warn — жёлтый, ≥ err — красный (почти полный диск должен бросаться в глаза)
 function level(pct, warn = 75, err = 90) {
   if (pct == null) return "";
   return pct >= err ? "err" : pct >= warn ? "warn" : "ok";
@@ -107,7 +107,7 @@ function renderDisk(disk) {
     return;
   }
   // Как в `df`: доля от места, доступного не-root (5% блоков ext4 зарезервированы),
-  // иначе на nv-02 монитор показывал бы 90% при «95%» в df.
+  // иначе монитор показывал бы, например, 90% при «95%» в df.
   const pct = (disk.used / (disk.used + disk.free)) * 100;
   $("#disk-pct").textContent = pct.toFixed(0);
   $("#disk-pct").className = level(pct, 80, 90);
@@ -144,7 +144,7 @@ function renderGpu(gpu) {
         </div>`;
     })
     .join("");
-  // История — только первой карты (на nv-02 она одна)
+  // История — только первой карты
   const g0 = gpu.gpus[0];
   if (g0) {
     push("gpu", g0.util);

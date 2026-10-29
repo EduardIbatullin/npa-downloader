@@ -1,5 +1,8 @@
-"""HTTP-клиент с общими retry/backoff (base_url настраивается — используется и для
-publication.pravo.gov.ru, и для burondt.ru)."""
+"""HTTP-клиент с повторами и нарастающей паузой.
+
+Базовый адрес настраивается: клиент используется для publication.pravo.gov.ru,
+ips.pravo.gov.ru и burondt.ru.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +17,7 @@ BASE_URL = "http://publication.pravo.gov.ru"
 JSON_TIMEOUT = httpx.Timeout(30.0, connect=15.0)
 PDF_TIMEOUT = httpx.Timeout(180.0, connect=15.0)
 
-# 429 добавлен ради burondt.ru (устойчивость на полном объёме ~2550 запросов не проверена;
-# для publication.pravo.gov.ru не мешает — там 429 не наблюдался)
+# 429 отдаёт burondt.ru при частых запросах; publication.pravo.gov.ru его не отдаёт
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 MAX_ATTEMPTS = 4
 BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0)
@@ -24,7 +26,12 @@ BURONDT_PAGE_PAUSE_SECONDS = 0.5  # чуть консервативнее — у
 
 
 class NetworkError(Exception):
-    """Сбой сети/сервера после исчерпания retry."""
+    """Сбой сети или сервера после всех повторов.
+
+    Args:
+        message: Описание сбоя.
+        cause: Исходное исключение.
+    """
 
     def __init__(self, message: str, *, cause: Exception | None = None) -> None:
         super().__init__(message)
@@ -36,7 +43,12 @@ def create_client(
     transport: httpx.BaseTransport | None = None,
     base_url: str = BASE_URL,
 ) -> httpx.Client:
-    """Создаёт синхронный httpx.Client (можно подменить transport для тестов и base_url для другого хоста)."""
+    """Создаёт синхронный ``httpx.Client``.
+
+    Args:
+        base_url: Базовый адрес.
+        transport: Транспорт (подменяется в тестах).
+    """
     kwargs: dict[str, Any] = {
         "base_url": base_url,
         "timeout": JSON_TIMEOUT,
