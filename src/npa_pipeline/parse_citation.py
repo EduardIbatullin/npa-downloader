@@ -148,6 +148,7 @@ class ParsedCitation:
     doc_type: str | None = None
 
     def to_query(self) -> Query:
+        """Запрос поиска по разобранным реквизитам."""
         return Query(
             authority_name=self.authority_name,
             number=self.number,
@@ -155,6 +156,7 @@ class ParsedCitation:
         )
 
     def to_dict(self) -> dict:
+        """JSON-совместимый словарь реквизитов."""
         return {
             "number": self.number,
             "date": self.date.isoformat(),
@@ -164,12 +166,14 @@ class ParsedCitation:
 
 
 def _normalize_spaces(text: str) -> str:
+    """Заменяет ``<br>`` и переводы строк на пробел и схлопывает пробелы."""
     cleaned = _BR.sub("\n", text)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     return _SPACES.sub(" ", cleaned).strip()
 
 
 def _parse_date_from_match(match: re.Match[str]) -> date:
+    """Дата из совпадения: «12 мая 2023» или «12.05.2023»."""
     if match.groupdict().get("month"):
         month = _MONTHS[match.group("month").casefold()]
         return date(int(match.group("y_word")), month, int(match.group("d_word")))
@@ -177,6 +181,11 @@ def _parse_date_from_match(match: re.Match[str]) -> date:
 
 
 def _strip_doc_type(head: str) -> tuple[str | None, str]:
+    """Отделяет вид документа от начала названия.
+
+    Returns:
+        Вид документа (или None) и остаток названия.
+    """
     folded = head.strip()
     low = folded.casefold()
     for dtype in _DOC_TYPES:
@@ -197,6 +206,11 @@ def _expand_short_authority(text: str) -> str | None:
 
 
 def _genitive_to_nominative(authority: str) -> str:
+    """Название органа в именительном падеже («Министерства …» → «Министерство …»).
+
+    Сокращения («Минприроды России») раскрываются по справочнику, «РФ» и
+    «России» — в «Российской Федерации».
+    """
     text = authority.strip()
     short = _expand_short_authority(text)
     if short:
@@ -211,6 +225,7 @@ def _genitive_to_nominative(authority: str) -> str:
 
 
 def _authority_from_head(head: str, doc_type: str | None) -> str | None:
+    """Орган из шапки названия; для пустой шапки — орган по умолчанию для вида документа."""
     rest = head.strip()
     if not rest:
         if doc_type and doc_type in _DEFAULT_AUTHORITY_BY_TYPE:
@@ -230,6 +245,7 @@ def _authority_from_redaction(original: str) -> str | None:
 
 
 def _clean_number(raw: str) -> str:
+    """Номер без хвостовых знаков и текста после кавычки."""
     number = raw.strip().rstrip(".,;)]}")
     for q in "\"«»„“”":
         if q in number:

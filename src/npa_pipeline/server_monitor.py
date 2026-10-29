@@ -5,16 +5,16 @@
 cgroup в docker-compose.yml нет), поэтому CPU/RAM читаем прямо оттуда, без
 монтирования /proc и без docker.sock.
 
-Диск — shutil.disk_usage по тому downloads: на nv-02 это bind mount с корневого
-раздела хоста, т.е. те самые «/ 95%», которые важно видеть перед загрузкой моделей.
+Диск — shutil.disk_usage по тому downloads; если это bind mount с корневого
+раздела хоста, видна заполненность корневого раздела.
 
 GPU — nvidia-smi: в docker-compose.yml сервису web выдан GPU только с capability
 `utility` (NVIDIA runtime кладёт в контейнер nvidia-smi и даёт читать статистику,
 но не считать на GPU). Нет nvidia-smi (локальный запуск без GPU) — блок помечается
 недоступным, остальная страница работает.
 
-Ollama — какие модели сейчас загружены и сколько VRAM держат (GPU на nv-02 общий:
-ollama, neuro_expert, эскалация ИИ в npa-ocr), через /api/ps по OLLAMA_URL.
+Ollama — какие модели загружены и сколько видеопамяти занимают (полезно, когда GPU
+общая для нескольких сервисов), через /api/ps по OLLAMA_URL.
 """
 
 from __future__ import annotations
@@ -70,6 +70,7 @@ def parse_proc_stat(text: str) -> dict[str, tuple[int, int]]:
 
 
 def cpu_percent(prev: dict[str, tuple[int, int]], cur: dict[str, tuple[int, int]]) -> dict[str, float]:
+    """Загрузка каждого CPU в процентах между двумя снимками :func:`parse_proc_stat`."""
     out = {}
     for name, (busy, total) in cur.items():
         p_busy, p_total = prev.get(name, (0, 0))
@@ -87,6 +88,7 @@ class _CpuSampler:
         self._prev: dict[str, tuple[int, int]] | None = None
 
     def sample(self) -> dict[str, float]:
+        """Загрузка CPU с прошлого вызова (при первом — за короткий интервал)."""
         with self._lock:
             if self._prev is None:
                 self._prev = parse_proc_stat((PROC / "stat").read_text())
@@ -101,6 +103,7 @@ _cpu = _CpuSampler()
 
 
 def read_cpu() -> dict:
+    """Загрузка CPU: общая, по ядрам, число ядер и средняя нагрузка (loadavg)."""
     pct = _cpu.sample()
     load = (PROC / "loadavg").read_text().split()
     cores = sorted((k for k in pct if k != "cpu"), key=lambda k: int(k[3:]))
@@ -116,6 +119,7 @@ def read_cpu() -> dict:
 
 
 def parse_meminfo(text: str) -> dict:
+    """Разбирает ``/proc/meminfo``: всего, занято, доступно, кэш и подкачка, в байтах."""
     kb = {}
     for line in text.splitlines():
         key, _, rest = line.partition(":")
@@ -137,15 +141,18 @@ def parse_meminfo(text: str) -> dict:
 
 
 def read_memory() -> dict:
+    """Память хоста, см. :func:`parse_meminfo`."""
     return parse_meminfo((PROC / "meminfo").read_text())
 
 
 def read_disk(path: Path) -> dict:
+    """Заполненность раздела с ``path``, в байтах."""
     usage = shutil.disk_usage(path)
     return {"path": str(path), "total": usage.total, "used": usage.used, "free": usage.free}
 
 
 def read_uptime() -> float:
+    """Время работы хоста, с."""
     return float((PROC / "uptime").read_text().split()[0])
 
 
@@ -153,6 +160,7 @@ def read_uptime() -> float:
 
 
 def _num(value: str) -> float | None:
+    """Число из поля nvidia-smi; None для «[N/A]» и подобных."""
     try:
         return float(value)
     except ValueError:  # «[N/A]», «[Not Supported]»
@@ -181,11 +189,13 @@ def parse_nvidia_smi(text: str) -> list[dict]:
 
 
 def _mib(value: str) -> int | None:
+    """МиБ из поля nvidia-smi в байтах."""
     n = _num(value)
     return None if n is None else int(n * 1024 * 1024)
 
 
 def read_gpu() -> dict:
+    """Состояние GPU по nvidia-smi; ``available=False`` с причиной, если его нет."""
     try:
         proc = subprocess.run(
             ["nvidia-smi", f"--query-gpu={','.join(_GPU_FIELDS)}", "--format=csv,noheader,nounits"],
@@ -205,6 +215,7 @@ def read_gpu() -> dict:
 
 
 def read_ollama(client: httpx.Client | None = None) -> dict:
+    """Загруженные модели Ollama (``/api/ps``); ``available=False`` с причиной при сбое."""
     try:
         if client is None:
             with httpx.Client(timeout=OLLAMA_TIMEOUT) as c:

@@ -1,19 +1,14 @@
-"""Предпросмотр .docx как HTML — не persist, считается на лету при каждом
-запросе «Открыть» в webapp.py.
+"""Предпросмотр .docx в браузере в виде HTML.
 
-Браузеры не умеют рендерить .docx inline (в отличие от PDF), поэтому
-`Content-Disposition: inline` на реальный файл .docx не даёт эффекта «открылось
-в вкладке» — браузер либо скачивает файл, либо предлагает открыть его во
-внешнем приложении. Вместо того чтобы отдавать сам .docx, кнопка «Открыть»
-показывает HTML-рендер того же содержимого, собранный заново из самого .docx
-(единственный источник истины на диске — исходный HTML, если он был,
-нигде не хранится).
+Браузеры не показывают .docx во вкладке (в отличие от PDF): с
+``Content-Disposition: inline`` файл всё равно скачивается. Поэтому кнопка
+«Открыть» показывает HTML, собранный из .docx при каждом запросе; на диске
+хранится только .docx.
 
-Это обратная операция к npa_pipeline.ebpi_docx.convert_redtext_to_docx, но не
-её точный инверс: не восстанавливает точные классы абзацев/разметку, только
-читаемое приближение (выравнивание, полужирный, таблицы) по тому, что реально
-хранится в .docx (python-docx), — этого достаточно для предпросмотра, не для
-повторной публикации.
+Это приближённая обратная операция к
+:func:`npa_pipeline.ebpi_docx.convert_redtext_to_docx`: сохраняются
+выравнивание, полужирный шрифт и таблицы — достаточно для предпросмотра, но не
+для повторной публикации.
 """
 
 from __future__ import annotations
@@ -44,8 +39,10 @@ td { border: 1px solid #999; padding: 4px 8px; vertical-align: top; }
 
 
 def _iter_block_items(document: Document) -> Iterator[Union[Paragraph, Table]]:
-    """Абзацы и таблицы в исходном порядке документа (python-docx не даёт этого
-    напрямую — стандартный приём через body.iterchildren())."""
+    """Абзацы и таблицы в порядке документа.
+
+    python-docx не даёт их вместе, поэтому обходятся дочерние элементы ``body``.
+    """
     body = document.element.body
     for child in body.iterchildren():
         if child.tag == qn("w:p"):
@@ -55,6 +52,7 @@ def _iter_block_items(document: Document) -> Iterator[Union[Paragraph, Table]]:
 
 
 def _paragraph_html(paragraph: Paragraph) -> str:
+    """HTML абзаца: текст, полужирный шрифт, выравнивание и левый отступ."""
     text = "".join(html_lib.escape(run.text) for run in paragraph.runs) or html_lib.escape(paragraph.text)
     if not text.strip():
         return "<p>&nbsp;</p>"
@@ -73,6 +71,7 @@ def _paragraph_html(paragraph: Paragraph) -> str:
 
 
 def _table_html(table: Table) -> str:
+    """HTML таблицы; объединённые ячейки выводятся один раз."""
     rows_html = []
     for row in table.rows:
         seen: set[int] = set()
@@ -91,13 +90,17 @@ def _table_html(table: Table) -> str:
 def render_docx_preview_html(path: Path) -> str:
     """Собирает HTML-страницу из .docx для показа в браузере по кнопке «Открыть».
 
-    Не точная копия исходной вёрстки (выравнивание/полужирный/таблицы — да,
-    остальные начертания и колонки объединения — нет, см. докстринг модуля) —
-    для предпросмотра текста этого достаточно; «Скачать» отдаёт настоящий файл.
+    Сохраняются выравнивание, полужирный шрифт и таблицы (см. описание модуля).
+
+    Args:
+        path: Файл .docx.
+
+    Returns:
+        HTML-страница.
 
     Raises:
-        Exception: path — не валидный .docx (например, старый бинарный .doc) —
-            вызывающий код (webapp.py) ловит это и отдаёт файл как есть.
+        Exception: Файл не является .docx (например, старый двоичный .doc);
+            вызывающий код отдаёт тогда сам файл.
     """
     document = Document(str(path))
     parts = [

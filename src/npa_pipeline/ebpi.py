@@ -28,8 +28,8 @@ _BPA = "ebpi"  # единственное известное значение э
 
 # Извлекает eoNumber из docimagepath вида
 # "http://publication.pravo.gov.ru/Document/View/<eoNumber>" в ответе card() по
-# docid (см. extract_eo_number_from_docimagepath, fetch_card_by_docid). Формат
-# подтверждён на реальных данных — см. docs/ebpi-coverage.md.
+# docid (см. extract_eo_number_from_docimagepath, fetch_card_by_docid; формат — в
+# docs/ebpi-coverage.md).
 _DOCIMAGEPATH_EO_RE = re.compile(r"/Document/View/(\d+)")
 
 # Сколько дней держать отрицательный результат проверки EBPI (covered=False) без

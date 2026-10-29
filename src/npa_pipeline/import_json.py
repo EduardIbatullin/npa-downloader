@@ -1,4 +1,4 @@
-"""Импорт старых JSON-sidecar из downloads/ в единую БД."""
+"""Перенос JSON-файлов сведений о загрузках (sidecar) из каталога загрузок в БД."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from npa_pipeline.models import DocItem, parse_api_date
 
 
 def _doc_from_sidecar(info: dict[str, Any]) -> DocItem | None:
+    """Документ из sidecar-файла; None, если в нём нет eoNumber."""
     eo = info.get("eoNumber") or info.get("eo_number")
     doc = info.get("document") or {}
     if not eo:
@@ -36,6 +37,7 @@ def _doc_from_sidecar(info: dict[str, Any]) -> DocItem | None:
 
 
 def _resolve_pdf(out: Path, meta_path: Path, info: dict[str, Any]) -> Path | None:
+    """PDF к sidecar-файлу: по полю ``filename`` или по имени файла; None, если не найден."""
     candidates: list[Path] = []
     filename = info.get("filename")
     if filename:
@@ -54,7 +56,7 @@ def import_json_sidecars(
     *,
     delete_json: bool = False,
 ) -> dict[str, int]:
-    """Переносит старые *.json sidecar-файлы из каталога загрузок в БД.
+    """Переносит JSON-файлы сведений о загрузках из каталога загрузок в БД.
 
     Args:
         out_dir: каталог со старыми sidecar-файлами и PDF рядом с ними.

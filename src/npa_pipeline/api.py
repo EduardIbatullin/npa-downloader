@@ -1,4 +1,4 @@
-"""Обёртки эндпоинтов publication.pravo.gov.ru."""
+"""Клиент API publication.pravo.gov.ru (см. docs/api-reference.md)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,11 @@ PAGE_SIZE = 200
 
 
 def _doc_from_list_item(item: dict[str, Any]) -> DocItem:
+    """Собирает документ из элемента списка ``/api/Documents``.
+
+    Raises:
+        ValueError: В элементе нет ``documentDate``.
+    """
     doc_date = parse_api_date(item.get("documentDate"))
     if doc_date is None:
         raise ValueError(f"Нет documentDate в элементе {item.get('eoNumber')}")
@@ -31,6 +36,11 @@ def _doc_from_list_item(item: dict[str, Any]) -> DocItem:
 
 
 def _doc_from_card(card: dict[str, Any]) -> DocItem:
+    """Собирает документ из карточки ``/api/Document`` со всеми подписантами.
+
+    Raises:
+        ValueError: В карточке нет ``documentDate``.
+    """
     doc_date = parse_api_date(card.get("documentDate"))
     if doc_date is None:
         raise ValueError(f"Нет documentDate в карточке {card.get('eoNumber')}")
@@ -69,11 +79,10 @@ def search_documents(
     Args:
         number: номер документа для поиска.
         search_type: режим сравнения номера (NumberSearchType) — 0 точное
-            совпадение, 1 начинается с, 2 заканчивается на, 3 содержит; все 4
-            режима проверены на реальных данных, см. docs/api-reference.md.
+            совпадение, 1 начинается с, 2 заканчивается на, 3 содержит (см.
+            docs/api-reference.md).
         authority_id: GUID органа-подписанта. None — без фильтра: сервер ищет
-            по всей системе документов сразу, не только по одному органу
-            (подтверждено на реальных данных, см. docs/api-reference.md).
+            по документам всех органов.
         page_size: размер страницы ответа.
 
     Returns:
@@ -150,6 +159,7 @@ def download_pdf(client: httpx.Client, eo_number: str) -> tuple[bytes, int | Non
 
 
 def pdf_url(eo_number: str) -> str:
+    """Адрес PDF документа на портале."""
     from npa_pipeline.http_client import BASE_URL
 
     return f"{BASE_URL}/file/pdf?eoNumber={eo_number}"

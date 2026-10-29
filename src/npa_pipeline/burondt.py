@@ -1,14 +1,13 @@
-"""Обёртка burondt.ru: карточки ИТС/НДТ (NDTDocsDetail.php) и скачивание файлов
-(NDTDocsFileDownload.php). Без обращений к БД — как api.py для publication.pravo.gov.ru.
+"""Клиент burondt.ru: карточки справочников ИТС НДТ и скачивание их файлов.
 
-ИТС/НДТ не проходят через publication.pravo.gov.ru вообще, поэтому это отдельный источник
-со своим методом. На burondt.ru нет резолвинга по реквизитам — карточки лежат по
-последовательным числовым UrlId в диапазоне, общем с ГОСТами и административными
-документами технических рабочих групп, поэтому единственный способ найти ИТС — обойти
-диапазон целиком и отфильтровать по полю «Обозначение» (обязательно, иначе в кэш попадёт
-посторонний ГОСТ/протокол). Диапазон продолжает пополняться со временем (подтверждено
-эмпирически), поэтому верхняя граница нигде не хардкодится константой — определяется
-каждый раз заново обходом с длинной пустой серией (find_upper_bound/iter_cards).
+Справочники ИТС не публикуются на publication.pravo.gov.ru. На burondt.ru нет
+поиска по реквизитам: карточки лежат по последовательным числовым ``UrlId`` в
+диапазоне, общем с ГОСТами и документами технических рабочих групп. Поэтому
+справочники находятся обходом всего диапазона с отбором по полю «Обозначение»
+(:func:`is_its`). Диапазон пополняется, и его верхняя граница каждый раз
+определяется заново по длинной серии пустых карточек (:func:`find_upper_bound`).
+
+Модуль не обращается к БД.
 """
 
 from __future__ import annotations
@@ -76,16 +75,17 @@ class ItsCard:
 
 
 def create_burondt_client(*, transport: httpx.BaseTransport | None = None) -> httpx.Client:
-    """Клиент к burondt.ru — тот же create_client, другой base_url."""
+    """Создаёт HTTP-клиент burondt.ru."""
     return create_client(base_url=BURONDT_BASE_URL, transport=transport)
 
 
 def fetch_card_html(client: httpx.Client, url_id: int) -> str:
-    """GET NDTDocsDetail.php?UrlId=<url_id> — сырой HTML карточки."""
+    """Загружает HTML карточки ``NDTDocsDetail.php?UrlId=<url_id>``."""
     return request_text(client, "GET", CARD_PATH, params={"UrlId": url_id})
 
 
 def _strip_tags(text: str) -> str:
+    """Текст без HTML-тегов и ``&nbsp;``."""
     return _TAG_RE.sub("", text).replace("&nbsp;", " ").strip()
 
 
@@ -99,11 +99,11 @@ def _classify_role(caption: str) -> str:
 
 
 def extract_order_meta(caption: str) -> tuple[str | None, str | None]:
-    """Best-effort извлечение номера и даты приказа из текста подписи.
+    """Извлекает номер и дату приказа из подписи файла, если они есть.
 
-    НЕ авторитетный источник — подпись карточки может содержать опечатку в номере
-    или дате (см. docs/stage1-plan.md, «Несоответствие номера утверждающего
-    приказа»). Использовать только как order_*_caption, не как проверенную цитату.
+    Подпись карточки не авторитетна: номер и дата в ней могут не совпадать с
+    самим приказом. Результат годится только для показа, а не как проверенные
+    реквизиты.
 
     Returns:
         (номер, дата) — любой из них None, если не нашлось в тексте подписи.
@@ -120,7 +120,7 @@ def parse_card(html: str, url_id: int) -> ItsCard | None:
     """Разбирает HTML карточки NDTDocsDetail.php в ItsCard.
 
     Returns:
-        None — пустой слот (пропуск в диапазоне UrlId, не ошибка).
+        Карточка или None для пустого ``UrlId`` (пропуски в диапазоне обычны).
     """
     designation_m = _DESIGNATION_RE.search(html)
     designation = designation_m.group(1).strip() if designation_m else ""
@@ -149,17 +149,14 @@ def parse_card(html: str, url_id: int) -> ItsCard | None:
 
 
 def is_its(card: ItsCard) -> bool:
-    """Обязательный фильтр — диапазон общий с ГОСТами/протоколами ТРГ."""
+    """Проверяет, что карточка — справочник ИТС, а не ГОСТ или протокол."""
     return card.designation.strip().upper().startswith(ITS_PREFIX)
 
 
 def resolve_ambiguous_roles(
     files_with_bytes: list[tuple[ItsCardFile, bytes]]
 ) -> list[ItsCardFile]:
-    """Фолбэк-роль по размеру файла, если подпись карточки её не определила.
-
-    На практике подпись почти всегда содержит «приказ» — этот путь для редких
-    случаев, когда _classify_role не сработал (например, нестандартная подпись).
+    """Определяет роли файлов по размеру, когда подпись карточки их не определила.
 
     Args:
         files_with_bytes: файлы карточки вместе с их содержимым — размер в байтах
@@ -208,8 +205,8 @@ def find_upper_bound(
     """Находит верхнюю границу диапазона UrlId без хардкода константы.
 
     Идёт вперёд от from_url_id, пока не встретит confirm_empty_run пустых карточек
-    подряд — такая серия надёжно отличает конец диапазона от единичных пропусков
-    внутри него (см. докстринг модуля).
+    подряд: такая серия отличает конец диапазона от единичных пропусков внутри
+    него.
 
     Args:
         from_url_id: с какого UrlId начинать обход вперёд.

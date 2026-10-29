@@ -1,14 +1,12 @@
-"""HTML-текст EBPI (redtext, Word-экспорт) -> настоящий .docx.
+"""Сборка .docx из HTML-текста EBPI (redtext).
 
-Это тот же HTML, что отдаёт кнопка «Сохранить в Word» на actual.pravo.gov.ru: сайт
-просто заворачивает его в data:application/msword,... и браузер скачивает как .doc
-(Word открывает благодаря xmlns:w=... меткам). Здесь вместо этого трюка — честная
-сборка через python-docx, см. docs/ebpi-coverage.md.
+redtext — тот же HTML, что сайт actual.pravo.gov.ru отдаёт по кнопке
+«Сохранить в Word», заворачивая его в ``data:application/msword``. Здесь из него
+собирается настоящий .docx через python-docx (см. docs/ebpi-coverage.md).
 
-Разметка классов абзацев/ячеек калибрована по реальным документам EBPI (Постановления
-№190, №1430, №710 — без таблиц и с таблицами, включая двухуровневую шапку с
-объединёнными ячейками). Теги вне этого набора (на практике не встречались) тихо
-пропускаются — не роняют сборку документа из-за одного непредвиденного элемента.
+Поддерживаются классы абзацев и ячеек redtext, таблицы с объединёнными ячейками
+и многоуровневой шапкой. Неизвестные теги верхнего уровня пропускаются, чтобы
+один непредвиденный элемент не ронял сборку документа.
 """
 
 from __future__ import annotations
@@ -30,15 +28,13 @@ _BOLD_CLASSES = {"T", "Z", "H"}
 _LEFT_INDENT_CLASSES = {"I", "K", "H", "Y"}
 
 _PX_PER_INCH = 96
-_LEFT_INDENT_PX = 45  # совпадает с margin-left в CSS redtext (см. docs/ebpi-coverage.md)
+_LEFT_INDENT_PX = 45  # margin-left в CSS redtext
 
 
 def convert_redtext_to_docx(html: str, out_path: Path) -> None:
     """Собирает .docx из HTML redtext EBPI и сохраняет его в out_path.
 
-    Разметка (классы абзацев/ячеек, `<table>` rowspan/colspan) калибрована по трём
-    реальным документам — см. докстринг модуля; тег верхнего уровня вне `<p>`/
-    `<table>` молча пропускается, а не роняет сборку.
+    Теги верхнего уровня, кроме ``<p>`` и ``<table>``, пропускаются.
 
     Args:
         html: redtext, как его отдаёт EBPI (см. npa_pipeline.ebpi.fetch_redtext) —
@@ -63,12 +59,12 @@ def convert_redtext_to_docx(html: str, out_path: Path) -> None:
             _add_paragraph(doc, child)
         elif child.name == "table":
             _add_table(doc, child)
-        # прочие теги верхнего уровня в проверенных документах не встречались —
-        # пропускаем молча, а не падаем на непредвиденной структуре
+        # прочие теги верхнего уровня пропускаются
     doc.save(str(out_path))
 
 
 def _classes(tag: Tag) -> set[str]:
+    """CSS-классы тега."""
     cls = tag.get("class") or []
     if isinstance(cls, str):
         return {cls}
@@ -76,6 +72,7 @@ def _classes(tag: Tag) -> set[str]:
 
 
 def _add_paragraph(doc: Document, p_tag: Tag) -> None:
+    """Добавляет абзац с выравниванием, отступом и начертанием по классу ``<p>``."""
     classes = _classes(p_tag)
     paragraph = doc.add_paragraph()
     if classes & _CENTER_CLASSES:
@@ -90,6 +87,14 @@ def _add_paragraph(doc: Document, p_tag: Tag) -> None:
 
 
 def _add_inline(paragraph, node: Tag, *, bold_default: bool = False, superscript: bool = False) -> None:
+    """Добавляет в абзац текст узла прогонами с полужирным и надстрочным начертанием.
+
+    Args:
+        paragraph: Абзац python-docx.
+        node: Узел HTML.
+        bold_default: Полужирный шрифт по умолчанию.
+        superscript: Надстрочный шрифт.
+    """
     for child in node.children:
         if isinstance(child, NavigableString):
             text = str(child)
@@ -104,9 +109,8 @@ def _add_inline(paragraph, node: Tag, *, bold_default: bool = False, superscript
             paragraph.add_run().add_break()
             continue
         child_classes = _classes(child)
-        # W9 — надстрочная сноска; W4/W5/W6/W7 — жирный вариант; остальные начертания
-        # (курсив, подчёркивание) в проверенных документах роли не играли — не
-        # усложняем, пока не встретится реальный случай
+        # W9 — надстрочная сноска; W4/W5/W6/W7 — полужирный; курсив и подчёркивание
+        # не переносятся
         _add_inline(
             paragraph,
             child,
@@ -116,6 +120,11 @@ def _add_inline(paragraph, node: Tag, *, bold_default: bool = False, superscript
 
 
 def _add_table(doc: Document, table_tag: Tag) -> None:
+    """Добавляет таблицу с объединениями ячеек.
+
+    Непрямоугольное объединение не выполняется: ячейка остаётся отдельной, текст
+    не теряется.
+    """
     rows = table_tag.find_all("tr", recursive=False)
     tbody = table_tag.find("tbody", recursive=False)
     if not rows and tbody is not None:
@@ -147,8 +156,7 @@ def _add_table(doc: Document, table_tag: Tag) -> None:
                 try:
                     table.cell(r, c).merge(table.cell(r2, c2))
                 except InvalidSpanError:
-                    pass  # несовпадающая геометрия объединения — ячейка остаётся
-                    # неслитой, но текст не теряется (тот же компромисс, что в OCR)
+                    pass  # непрямоугольное объединение: ячейка остаётся отдельной
             for rr in range(r, r2 + 1):
                 for cc in range(c, c2 + 1):
                     occupied.add((rr, cc))
@@ -156,6 +164,7 @@ def _add_table(doc: Document, table_tag: Tag) -> None:
 
 
 def _fill_cell(cell, td: Tag) -> None:
+    """Заполняет ячейку абзацами из ``<td>``."""
     cell.paragraphs[0].text = ""
     inner_paragraphs = td.find_all("p", recursive=False)
     if not inner_paragraphs:

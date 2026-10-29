@@ -34,7 +34,11 @@ def _federal_sort_weight(name_norm: str, weight: int | None) -> int:
 
 
 class AuthorityCache:
-    """Кэш органов в единой SQLite-базе проекта."""
+    """Кэш органов в единой SQLite-базе проекта.
+
+    Args:
+        db_path: Путь к базе.
+    """
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
         self.db_path = resolve_db_path(db_path)
@@ -42,6 +46,7 @@ class AuthorityCache:
             init_schema(conn)
 
     def _connect(self):
+        """Соединение с базой."""
         return connect(self.db_path)
 
     def build(self, client: httpx.Client) -> int:
@@ -78,6 +83,7 @@ class AuthorityCache:
         return int(count)
 
     def count(self) -> int:
+        """Число органов в кэше."""
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM authorities").fetchone()[0])
 

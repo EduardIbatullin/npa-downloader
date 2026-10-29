@@ -1,4 +1,4 @@
-"""Веб-интерфейс для проверки API поиска и скачивания НПА / ИТС."""
+"""Веб-приложение: поиск и скачивание НПА и справочников ИТС, запуск распознавания."""
 
 from __future__ import annotations
 
@@ -43,6 +43,8 @@ ocr_jobs = OcrJobManager(DEFAULT_OUT)
 
 
 class FetchRequest(BaseModel):
+    """Запрос ``POST /api/fetch``: полное название или реквизиты НПА."""
+
     title: str | None = None
     eo_number: str | None = None
     authority_guid: str | None = None
@@ -53,16 +55,22 @@ class FetchRequest(BaseModel):
 
 
 class ParseTitleRequest(BaseModel):
+    """Запрос ``POST /api/parse-title``."""
+
     title: str
 
 
 class FetchItsRequest(BaseModel):
+    """Запрос ``POST /api/fetch-its``: обозначение или ``url_id`` карточки."""
+
     designation: str | None = None
     url_id: int | None = None
     download: bool = True
 
 
 class OcrStartRequest(BaseModel):
+    """Запрос ``POST /api/ocr``."""
+
     eo_number: str
     authority_name: str | None = None  # из ответа поиска (ocr.authority_name)
 
@@ -75,14 +83,17 @@ class LookupRequest(BaseModel):
 
 
 def _cache() -> AuthorityCache:
+    """Кэш органов."""
     return AuthorityCache(DEFAULT_DB)
 
 
 def _store() -> DocumentStore:
+    """Хранилище документов."""
     return DocumentStore(DEFAULT_DB)
 
 
 def _its_cache() -> ItsCache:
+    """Кэш карточек ИТС."""
     return ItsCache(DEFAULT_DB)
 
 
@@ -94,14 +105,11 @@ _OFFICE_MEDIA_TYPES = {
 
 
 def _office_file_response(path: Path, *, download: bool) -> Response:
-    """Отдаёт файл документа; «Открыть» (download=False) для .docx — HTML-
-    предпросмотр на лету (см. npa_pipeline.docx_preview), не сам файл: браузеры
-    не умеют рендерить .docx inline, Content-Disposition: inline на реальный
-    .docx всё равно вызывал бы скачивание/диалог «открыть в Word».
+    """Отдаёт файл документа.
 
-    Старый .doc (бинарный, не OOXML) и любой сбой разбора .docx — тихий
-    фолбэк на обычную отдачу файла (как и для PDF, где это и есть правильное
-    поведение — браузер отрисовывает его сам).
+    «Открыть» (``download=False``) для .docx отдаёт HTML-предпросмотр (см.
+    :mod:`npa_pipeline.docx_preview`): браузеры не показывают .docx во вкладке.
+    Двоичный .doc, PDF и .docx, который не удалось разобрать, отдаются как есть.
     """
     if not download and path.suffix.lower() == ".docx":
         try:
@@ -170,6 +178,7 @@ def _npa_docx_label(result: Result) -> str:
 
 
 def _pack_its_files(files: list[dict]) -> list[dict]:
+    """Скачанные файлы ИТС для ответа UI: подпись, роль и ссылки."""
     out = []
     for f in files:
         file_id = f.get("file_id")
@@ -413,11 +422,13 @@ def _lookup_npa(q: str) -> dict:
 
 @app.get("/")
 def index() -> FileResponse:
+    """Главная страница."""
     return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/monitor")
 def monitor_page() -> FileResponse:
+    """Страница мониторинга сервера."""
     return FileResponse(STATIC_DIR / "monitor.html")
 
 
@@ -429,6 +440,7 @@ def api_monitor() -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
+    """Состояние приложения: размеры кэшей и базы, пути."""
     cache = _cache()
     store = _store()
     its_cache = _its_cache()
@@ -469,6 +481,7 @@ def api_lookup(body: LookupRequest) -> dict:
 
 @app.post("/api/refresh-authorities")
 def refresh_authorities() -> dict:
+    """Обновляет кэш органов с портала."""
     cache = _cache()
     with create_client() as client:
         count = cache.build(client)
@@ -477,6 +490,7 @@ def refresh_authorities() -> dict:
 
 @app.get("/api/resolve")
 def resolve_authority(name: str = FastQuery(min_length=1)) -> dict:
+    """Органы-кандидаты для названия."""
     cache = _cache()
     guids = cache.resolve(authority_name=name)
     import sqlite3
@@ -500,6 +514,7 @@ def suggest_authorities(
     q: str = FastQuery(min_length=1),
     limit: int = FastQuery(default=15, ge=1, le=50),
 ) -> dict:
+    """Автодополнение названия органа."""
     cache = _cache()
     items = cache.suggest(q, limit=limit)
     return {"count": len(items), "items": items}
@@ -507,6 +522,7 @@ def suggest_authorities(
 
 @app.post("/api/fetch")
 def api_fetch(body: FetchRequest) -> dict:
+    """Ищет и скачивает НПА по названию или реквизитам; добавляет ссылки на файлы."""
     parsed = None
     title = (body.title or "").strip()
     if title:
@@ -551,6 +567,7 @@ def api_fetch(body: FetchRequest) -> dict:
 
 @app.post("/api/parse-title")
 def api_parse_title(body: ParseTitleRequest) -> dict:
+    """Разбирает полное название НПА в реквизиты."""
     title = (body.title or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="Укажите title")
@@ -567,10 +584,8 @@ def get_pdf(
 ) -> FileResponse:
     """Отдаёт PDF по eoNumber; при download=1 пересобирает короткое имя файла.
 
-    Имя на диске может быть старым/длинным (например, если naming.py менялся
-    после того, как файл был скачан) — при скачивании через браузер пересобираем
-    его по текущим правилам (human_filename_stem), а не отдаём как есть, иначе
-    пользователь долго получал бы отличающиеся от актуального стиля имена.
+    Имя файла на диске могло быть собрано по прежним правилам, поэтому при
+    скачивании оно собирается заново (:func:`npa_pipeline.naming.human_filename_stem`).
     """
     store = _store()
     path = find_pdf_by_eo(store, eo_number)
@@ -617,11 +632,8 @@ def get_ips_docx(
     (Status.FOUND_TEXT_ONLY, см. npa_pipeline.ips_pravo) — по внутреннему nd,
     не eoNumber: у этих документов eoNumber нет в принципе.
 
-    download=False («Открыть») — HTML-предпросмотр (см. _office_file_response),
-    не сам .docx — браузер не умеет рендерить .docx inline. Имя файла при
-    скачивании уже собрано по текущим правилам в момент сохранения
-    (naming.human_filename_stem_from_text) — пересборка не нужна, в отличие от
-    get_pdf.
+    ``download=False`` («Открыть») отдаёт HTML-предпросмотр (см.
+    ``_office_file_response``): браузер не показывает .docx во вкладке.
     """
     store = _store()
     rec = store.get_ips_document(nd)
@@ -643,9 +655,8 @@ def get_npa_docx_text(
     npa_pipeline.text_layer_docx), тем же приоритетом, что в service.py
     (_attach_ebpi_text перед _attach_text_layer_docx).
 
-    text_layer_docx_path нигде не хранится отдельной записью в БД — выводится
-    детерминированно из уже известного пути PDF (тот же stem), как и в самом
-    service.py, поэтому отдельной таблицы под него не нужно.
+    Путь к .docx из текстового слоя в БД не хранится: он совпадает с путём к
+    PDF с расширением .docx.
 
     download=False («Открыть») — HTML-предпросмотр, см. _office_file_response.
     """
@@ -665,6 +676,7 @@ def get_npa_docx_text(
 
 @app.post("/api/refresh-its")
 def refresh_its(max_requests: int = FastQuery(default=300, ge=1, le=3000)) -> dict:
+    """Продолжает обход burondt.ru не более чем на ``max_requests`` запросов."""
     cache = _its_cache()
     with burondt.create_burondt_client() as client:
         stats = cache.refresh(client, full_rescan=False, max_requests=max_requests)
@@ -673,6 +685,7 @@ def refresh_its(max_requests: int = FastQuery(default=300, ge=1, le=3000)) -> di
 
 @app.get("/api/its/search")
 def search_its(designation: str = FastQuery(min_length=1)) -> dict:
+    """Карточки ИТС, подходящие под обозначение."""
     cache = _its_cache()
     url_ids = cache.resolve(designation)
     items = [cache.get_card(u) for u in url_ids]
@@ -681,6 +694,7 @@ def search_its(designation: str = FastQuery(min_length=1)) -> dict:
 
 @app.post("/api/fetch-its")
 def api_fetch_its(body: FetchItsRequest) -> dict:
+    """Ищет и скачивает файлы справочника ИТС; добавляет ссылки на них."""
     if body.url_id is None and not (body.designation and body.designation.strip()):
         raise HTTPException(status_code=400, detail="Укажите designation или url_id")
 
@@ -712,6 +726,11 @@ def api_fetch_its(body: FetchItsRequest) -> dict:
 
 @app.post("/api/ocr")
 def api_ocr_start(body: OcrStartRequest) -> dict:
+    """Запускает распознавание скачанного PDF в сервисе npa-ocr.
+
+    Отвечает 404, если PDF нет на диске, 409, если сервис занят, 503, если он
+    недоступен.
+    """
     pdf = find_pdf_by_eo(_store(), body.eo_number.strip())
     if pdf is None:
         raise HTTPException(status_code=404, detail="PDF не найден на диске. Сначала найдите документ.")
@@ -725,6 +744,7 @@ def api_ocr_start(body: OcrStartRequest) -> dict:
 
 
 def _job_or_404(job_id: str):
+    """Задание распознавания; HTTPException 404 или 503."""
     try:
         job = ocr_jobs.get(job_id)
     except OcrServiceUnavailableError as exc:
@@ -736,11 +756,13 @@ def _job_or_404(job_id: str):
 
 @app.get("/api/ocr/jobs/{job_id}")
 def api_ocr_status(job_id: str) -> dict:
+    """Состояние задания распознавания."""
     return _job_or_404(job_id).to_dict()
 
 
 @app.post("/api/ocr/jobs/{job_id}/cancel")
 def api_ocr_cancel(job_id: str) -> dict:
+    """Отменяет задание распознавания."""
     job = _job_or_404(job_id)
     ocr_jobs.cancel(job)
     return job.to_dict()
@@ -748,6 +770,7 @@ def api_ocr_cancel(job_id: str) -> dict:
 
 @app.get("/api/ocr/jobs/{job_id}/docx")
 def api_ocr_docx(job_id: str) -> FileResponse:
+    """DOCX готового задания распознавания."""
     job = _job_or_404(job_id)
     if job.status != "done" or not job.docx_path.is_file():
         raise HTTPException(status_code=404, detail="Распознавание ещё не завершено")
@@ -764,11 +787,11 @@ def get_its_pdf(
     file_id: int,
     download: bool = FastQuery(default=False),
 ) -> Response:
-    """Отдаёт файл карточки ИТС — PDF или Word (справочник/приказ, см.
-    npa_pipeline.its_download). download=False («Открыть») для .docx — HTML-
-    предпросмотр, не сам файл (см. _office_file_response); PDF и старый .doc
-    отдаются как есть — для .doc нет парсера предпросмотра, браузер справится
-    с .pdf нативно."""
+    """Отдаёт файл карточки ИТС: PDF или Word.
+
+    ``download=False`` («Открыть») для .docx отдаёт HTML-предпросмотр; PDF и
+    двоичный .doc отдаются как есть.
+    """
     cache = _its_cache()
     rec = cache.get_file_record(file_id)
     if rec is None:
@@ -780,6 +803,7 @@ def get_its_pdf(
 
 
 def main() -> None:
+    """Запускает веб-приложение на 127.0.0.1:8765."""
     import uvicorn
 
     uvicorn.run(

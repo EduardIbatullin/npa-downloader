@@ -9,12 +9,12 @@ from typing import Any
 
 
 class Status(str, Enum):
+    """Итог поиска документа."""
+
     FOUND = "found"
-    # Найден только через резерв ips.pravo.gov.ru для документов старше
-    # COVERAGE_START — есть текст (ips_docx_path), но pdf_path всегда None, PDF у
-    # таких документов структурно не существует. Отдельный статус, а не FOUND с
-    # pdf_path=None, — чтобы код, разбирающий Status, не предполагал тихо, что
-    # pdf_path есть всегда при FOUND (см. docs/ips-pravo-coverage.md).
+    # Найден только через ips.pravo.gov.ru (документы старше COVERAGE_START): есть текст
+    # (ips_docx_path), PDF нет. Отдельный статус, чтобы при FOUND pdf_path был всегда
+    # (см. docs/ips-pravo-coverage.md).
     FOUND_TEXT_ONLY = "found_text_only"
     NOT_FOUND = "not_found"
     AMBIGUOUS = "ambiguous"
@@ -25,11 +25,14 @@ class Status(str, Enum):
 
 
 class MatchType(str, Enum):
+    """Как совпал номер: точно или только цифровой частью."""
+
     EXACT = "exact"
     DIGITS_ONLY = "digits_only"
 
 
-# Граница охвата портала (дата подписания): искать раньше — после неудачи → out_of_range
+# Граница охвата портала по дате подписания: документ до неё, не найденный на портале, —
+# out_of_range
 COVERAGE_START = date(2011, 11, 8)
 
 
@@ -45,6 +48,7 @@ class Query:
     doc_type_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-совместимый словарь запроса."""
         data = asdict(self)
         if self.date is not None:
             data["date"] = self.date.isoformat()
@@ -65,6 +69,7 @@ class DocItem:
     pdf_file_length: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-совместимый словарь документа."""
         return {
             "eo_number": self.eo_number,
             "number": self.number,
@@ -87,6 +92,7 @@ class DiagnosticHit:
     document_date: date
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-совместимый словарь находки."""
         return {
             "eo_number": self.eo_number,
             "authority_id": self.authority_id,
@@ -97,7 +103,7 @@ class DiagnosticHit:
 
 @dataclass
 class Result:
-    """Контракт результата этапа 1."""
+    """Результат поиска и скачивания документа."""
 
     status: Status
     match_type: MatchType | None = None
@@ -107,28 +113,23 @@ class Result:
     eo_number: str | None = None
     pdf_path: str | None = None
     message: str | None = None
-    # Текст из эталонного банка правовой информации (EBPI, actual.pravo.gov.ru) —
-    # заполняется только если документ там покрыт (законы, указы, постановления/
-    # распоряжения Правительства, акты высших судов и Банка России; ведомственные
-    # приказы не покрыты, см. npa_pipeline.ebpi). None — не покрыт или сбой сети;
-    # это не ошибка всего результата, PDF при этом уже скачан и доступен.
+    # Текст из эталонного банка правовой информации (EBPI, actual.pravo.gov.ru), если
+    # документ там есть (законы, указы, акты Правительства, высших судов и Банка России;
+    # ведомственных приказов нет, см. npa_pipeline.ebpi). None — нет текста или сбой сети;
+    # PDF при этом скачан.
     ebpi_docx_path: str | None = None
     ebpi_docstate: str | None = None  # напр. «Действует без изменений» / «Действует с изменениями»
     # Дата выбранной редакции EBPI (YYYYMMDD) — для подписи в UI «… с изменениями
     # от DD.MM.YYYYг.»; None, если текста EBPI нет.
     ebpi_red_date: str | None = None
-    # Резервный .docx, когда EBPI документ не покрывает, но PDF не скан (текстовый
-    # слой есть на всех страницах) — механическое извлечение текста (pypdf), без
-    # OCR и без распознавания структуры/таблиц, см. npa_pipeline.text_layer_docx.
-    # None — EBPI уже дал текст, либо PDF — скан (там нужен OCR), либо сбой.
+    # .docx из текстового слоя PDF, когда текста EBPI нет, а PDF не скан (см.
+    # npa_pipeline.text_layer_docx). None — есть текст EBPI, PDF — скан или сбой.
     text_layer_docx_path: str | None = None
-    # Резерв ips.pravo.gov.ru для документов старше COVERAGE_START (см.
-    # Status.FOUND_TEXT_ONLY и npa_pipeline.ips_pravo) — заполняются только при
-    # этом статусе. ips_candidates — отдельно от candidates: кандидаты оттуда не
-    # DocItem (нет eoNumber у большинства документов старше границы охвата), а
-    # лёгкие словари {"nd", "adoption", "docdate", "state", "publications"};
-    # заполняется при Status.AMBIGUOUS, когда несколько совпадений дал именно этот
-    # резерв (см. docs/ips-pravo-coverage.md, «Несколько совпадений»).
+    # Результат ips.pravo.gov.ru для документов старше COVERAGE_START (см.
+    # Status.FOUND_TEXT_ONLY и npa_pipeline.ips_pravo). ips_candidates — словари
+    # {"nd", "adoption", "docdate", "state", "publications"}, а не DocItem (у таких
+    # документов обычно нет eoNumber); заполняется при Status.AMBIGUOUS (см.
+    # docs/ips-pravo-coverage.md, «Результат поиска»).
     ips_nd: str | None = None
     ips_docx_path: str | None = None
     ips_state: str | None = None
@@ -136,6 +137,7 @@ class Result:
     ips_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-совместимый словарь результата."""
         return {
             "status": self.status.value,
             "match_type": self.match_type.value if self.match_type else None,
@@ -168,22 +170,20 @@ class ItsFileResult:
     caption: str | None = None  # подпись с карточки burondt — для UI
     order_number_caption: str | None = None
     order_date_caption: str | None = None
-    # Текст PDF-файла, если он не скан (текстовый слой на всех страницах) —
-    # механическое извлечение (pypdf), без OCR. ИТС структурно не ищутся в EBPI
-    # (нет eoNumber), поэтому это не fallback после EBPI, как у НПА, а единственный
-    # путь получить .docx. None — файл не PDF (уже Word), скан, или сбой.
+    # .docx из текстового слоя PDF, если файл не скан. ИТС нет в EBPI (нет eoNumber),
+    # поэтому это единственный способ получить .docx. None — файл уже в Word, скан или сбой.
     text_layer_docx_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-совместимый словарь файла."""
         return {
             "role": self.role,
             "file_id": self.file_id,
             "pdf_path": self.pdf_path,
             "pages": self.pages,
             "caption": self.caption,
-            # Подпись карточки burondt.ru не авторитетна — возможны неточности в
-            # номере/дате приказа (см. docs/stage1-plan.md, «Несоответствие номера
-            # утверждающего приказа»).
+            # подпись карточки burondt.ru не авторитетна: номер и дата приказа в ней
+            # могут не совпадать с самим приказом
             "order_number_caption": self.order_number_caption,
             "order_date_caption": self.order_date_caption,
             "order_meta_verified": False,
@@ -193,7 +193,7 @@ class ItsFileResult:
 
 @dataclass
 class ItsResult:
-    """Контракт результата для скачивания ИТС/НДТ (этап 1, расширение burondt.ru)."""
+    """Результат поиска и скачивания справочника ИТС НДТ с burondt.ru."""
 
     status: Status
     designation: str | None = None
@@ -203,6 +203,7 @@ class ItsResult:
     message: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-совместимый словарь результата."""
         return {
             "status": self.status.value,
             "designation": self.designation,
@@ -214,7 +215,7 @@ class ItsResult:
 
 
 def parse_api_date(value: str | None) -> date | None:
-    """Парсит documentDate вида 2023-04-25T00:00:00."""
+    """Разбирает дату API вида ``2023-04-25T00:00:00``; None для пустого значения."""
     if not value:
         return None
     text = value.strip()

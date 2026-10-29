@@ -1,11 +1,9 @@
-"""Клиент к поисковому API ips.pravo.gov.ru — резерв для документов старше границы
-охвата publication.pravo.gov.ru (models.COVERAGE_START), см.
-docs/ips-pravo-coverage.md.
+"""Клиент поискового API ips.pravo.gov.ru (см. docs/ips-pravo-coverage.md).
 
-Недокументированный React-эндпоинт (разобран из main.js минифицированного бандла
-сайта), без гарантий стабильности — любой сбой сети или неожиданный формат ответа
-трактуется одинаково, как «документа здесь нет»; вызывающий код (service.py) сам
-решает, как на это реагировать.
+Используется для документов старше границы охвата publication.pravo.gov.ru
+(:data:`npa_pipeline.models.COVERAGE_START`). API не документировано и может
+измениться, поэтому любой сбой сети или неожиданный ответ трактуется как
+«документа нет».
 """
 
 from __future__ import annotations
@@ -30,14 +28,16 @@ _FUTURE_STATUS = "не вступившая в силу"
 
 
 def create_ips_client(*, transport: httpx.BaseTransport | None = None) -> httpx.Client:
-    """Клиент к ips.pravo.gov.ru — тот же create_client, другой base_url."""
+    """Создаёт HTTP-клиент ips.pravo.gov.ru."""
     return create_client(base_url=BASE_URL, transport=transport)
 
 
 @dataclass
 class IpsHit:
-    """Один кандидат из search.json. Реквизиты — одной строкой (adoption), не
-    разбиты на поля, в отличие от DocItem с publication.pravo.gov.ru."""
+    """Найденный документ из ``search.json``.
+
+    Реквизиты даны одной строкой (``adoption``), а не отдельными полями.
+    """
 
     nd: str
     adoption: str
@@ -46,6 +46,7 @@ class IpsHit:
     publications: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-совместимый словарь находки."""
         return {
             "nd": self.nd,
             "adoption": self.adoption,
@@ -57,7 +58,7 @@ class IpsHit:
 
 @dataclass
 class IpsRedaction:
-    """Одна запись из document_card.json -> redactions[]."""
+    """Редакция документа из ``document_card.json`` (``redactions[]``)."""
 
     rdk: int  # исходное поле "id" — ключ редакции для documenttext
     status: str | None
@@ -66,16 +67,16 @@ class IpsRedaction:
 
 
 def _date_param(value: date) -> str:
+    """Дата в формате API: ДД.ММ.ГГГГ."""
     return value.strftime("%d.%m.%Y")
 
 
 def search_by_requisites(client: httpx.Client, *, number: str, doc_date: date) -> list[IpsHit]:
     """Ищет документ по точному номеру и дате подписания, без eoNumber.
 
-    Не фильтрует по органу (параметр `organ`) — значение, под которым орган
-    хранится в этом API, не выяснено до конца для федеральных законов (см.
-    docs/ips-pravo-coverage.md, «Не доведено до конца: фильтр organ»); номер+дата
-    уже дают однозначный результат в проверенных случаях.
+    Орган не фильтруется (параметр ``organ``): формат его значения для
+    федеральных законов не установлен (см. docs/ips-pravo-coverage.md), а номер
+    с датой обычно дают однозначный результат.
 
     Args:
         number: номер документа, как в реквизитах (например «7-ФЗ»).
@@ -156,11 +157,9 @@ def fetch_redactions(client: httpx.Client, *, nd: str) -> list[IpsRedaction]:
 def select_latest_redaction(redactions: list[IpsRedaction]) -> IpsRedaction | None:
     """Возвращает действующую на сегодня редакцию документа.
 
-    Выбирает по полю status, не по actual — actual на этом API системно не
-    проверялся на нескольких документах (в отличие от EBPI, где аналогичное поле
-    оказалось ловушкой, см. npa_pipeline.ebpi.select_latest_redaction), поэтому не
-    считается надёжным без дополнительной проверки (см.
-    docs/ips-pravo-coverage.md, «Открытые вопросы»).
+    Выбор идёт по полю ``status``, а не ``actual``: надёжность ``actual`` в
+    этом API не проверена, а у EBPI аналогичное поле ненадёжно (см.
+    :func:`npa_pipeline.ebpi.select_latest_redaction`).
 
     Returns:
         Редакция со status == "актуальная" (обычно ровно одна; при нескольких —
@@ -180,13 +179,11 @@ def select_latest_redaction(redactions: list[IpsRedaction]) -> IpsRedaction | No
 
 
 def fetch_text(client: httpx.Client, *, nd: str, rdk: int) -> str | None:
-    """Полный HTML-текст редакции (тот же стиль Word-экспорта, что у EBPI redtext,
-    см. npa_pipeline.ebpi_docx.convert_redtext_to_docx — предположительно
-    применим и здесь, не проверено на реальном прогоне).
+    """Загружает полный HTML-текст редакции.
 
-    `completed=true` обязателен — без него эндпоинт отдаёт 200 с пустой строкой
-    doctext (похоже на пустой ответ по ошибке, а не на отказ — это не «текста
-    нет», см. docs/ips-pravo-coverage.md).
+    Текст в том же стиле Word-экспорта, что redtext EBPI. Параметр
+    ``completed=true`` обязателен: без него API отвечает 200 с пустым
+    ``doctext``.
 
     Returns:
         HTML-текст либо None — документ/редакция не найдены, сбой сети, или

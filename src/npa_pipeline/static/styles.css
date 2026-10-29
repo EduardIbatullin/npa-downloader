@@ -598,7 +598,7 @@ pre.raw {
   }
 }
 
-/* Распознавание скана (этап 3) */
+/* Распознавание скана */
 .ocr-box { margin-top: 14px; }
 .ocr-status { margin-top: 10px; }
 .ocr-line { margin: 6px 0; }

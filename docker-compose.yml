@@ -16,7 +16,7 @@ services:
       # server_monitor.py и extra_hosts у сервиса ocr ниже (тот же приём).
       - OLLAMA_URL=http://host.docker.internal:11434
       # Имя хоста в заголовке монитора: внутри контейнера hostname — ID контейнера.
-      # Задаётся в .env на сервере (MONITOR_HOSTNAME=nv-02), как и WEB_PORT.
+      # Задаётся в .env на сервере, как и WEB_PORT.
       - MONITOR_HOSTNAME=${MONITOR_HOSTNAME:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -38,7 +38,7 @@ services:
   ocr:
     # Образ — отдельный проект (npa-ocr, своё репо), собирается отдельно, не
     # отсюда: build: ../npa-ocr намеренно не используется — сервис не обязан
-    # жить рядом с этим репозиторием (в будущем — свой хост или реестр образов,
+    # жить рядом с этим репозиторием (может быть свой хост или реестр образов,
     # см. docs/ocr-integration.md).
     #   cd ../npa-ocr && docker build -t npa-ocr .
     image: npa-ocr:latest
@@ -47,7 +47,7 @@ services:
     entrypoint: ["uvicorn"]
     command: ["npa_ocr.server:app", "--host", "0.0.0.0", "--port", "8000"]
     # host.docker.internal: доступ к Ollama (эскалация ИИ для текста под печатью/
-    # штампом, см. npa-ocr/docs/plan.md) — Ollama крутится в своём отдельном
+    # штампом, см. README npa-ocr) — Ollama крутится в своём отдельном
     # docker-compose проекте на хосте, порт 11434 опубликован на 0.0.0.0, но
     # сервис ocr живёт в другой docker-сети и своего DNS-имени для хоста не
     # имеет. host-gateway — спец-значение Docker (20.10+) для IP хоста из
@@ -66,8 +66,8 @@ services:
       - vlm-gate
     restart: unless-stopped
 
-  # Шлюз перед vLLM (npa-ocr/src/npa_ocr/vlm_gate.py, тот же образ npa-ocr). GPU на nv-02 одна на
-  # всех, а vLLM держит ~10 ГБ видеопамяти, пока запущен: шлюз запускает контейнер vlm по первому
+  # Шлюз перед vLLM (npa-ocr/src/npa_ocr/vlm_gate.py, тот же образ npa-ocr). GPU общая, а vLLM
+  # держит ~10 ГБ видеопамяти, пока запущен: шлюз запускает контейнер vlm по первому
   # запросу (холодный старт ~2–3 мин) и останавливает после VLM_IDLE_MIN минут без запросов.
   # docker.sock нужен ровно для start/stop контейнера npa-vlm — но даёт контейнеру права root на
   # хосте; шлюз не публикует порт наружу и доступен только из сети этого compose.
@@ -85,8 +85,8 @@ services:
   # vLLM с DeepSeek-OCR. Запускает и останавливает его шлюз vlm-gate; после `docker compose up`
   # он стартует сам и гасится шлюзом через VLM_IDLE_MIN минут, если работы нет. restart: "no" —
   # иначе docker поднимал бы его после перезагрузки хоста и держал GPU впустую.
-  # Флаги — из спайка npa-vlm-ocr (README): память задана явно (--kv-cache-memory-bytes), без
-  # замера свободной — GPU общая; prefix/mm-кэши выключены (каждая страница новая).
+  # Память задана явно (--kv-cache-memory-bytes), без замера свободной — GPU общая;
+  # prefix/mm-кэши выключены (каждая страница новая).
   vlm:
     image: vllm/vllm-openai:v0.32.0
     container_name: npa-vlm
@@ -106,11 +106,11 @@ services:
     environment:
       # модель уже в кэше (VLM_HF_CACHE), в сеть не ходить
       - HF_HUB_OFFLINE=1
-      # без этого Triton-ядро vLLM 0.32 падает на глобальной LOG2E (README спайка npa-vlm-ocr)
+      # без этого Triton-ядро vLLM 0.32 падает на глобальной LOG2E
       - TRITON_ALLOW_NON_CONSTEXPR_GLOBALS=1
     volumes:
-      # Кэш Hugging Face с весами deepseek-ai/DeepSeek-OCR (~6,7 ГБ). На nv-02 в .env:
-      # VLM_HF_CACHE=/home/eduard/npa-vlm-ocr/hf-cache (уже скачано в спайке — не дублировать)
+      # Кэш Hugging Face с весами deepseek-ai/DeepSeek-OCR (~6,7 ГБ); путь к уже скачанному
+      # кэшу задаётся в .env (VLM_HF_CACHE), чтобы не загружать веса повторно
       - ${VLM_HF_CACHE:-./vlm-cache/huggingface}:/root/.cache/huggingface
       # кэш компиляции vLLM (torch.compile) — переживает пересоздание контейнера
       - ./vlm-cache/vllm:/root/.cache/vllm
