@@ -11,8 +11,11 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from io import BytesIO
 
 import httpx
+import pytest
+from pypdf import PdfWriter
 from fastapi.testclient import TestClient
 
 from npa_pipeline import webapp
@@ -112,3 +115,91 @@ def test_authority_from_title_for_ministry_orders():
     assert webapp._authority_from_title("Постановление Правительства Российской Федерации от 15.09.2020 № 1430") == (
         "Правительство Российской Федерации")
     assert webapp._authority_from_title("Приказ Росстандарта от 29.09.2025 № 2095") is None
+
+
+def _pdf_bytes() -> bytes:
+    writer = PdfWriter()
+    writer.add_blank_page(width=595, height=842)
+    stream = BytesIO()
+    writer.write(stream)
+    return stream.getvalue()
+
+
+def test_upload_pdf_downloads_result_and_cleans_temporary_file(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, done=True)
+    manager = webapp.ocr_jobs
+    original_start = manager.start
+    uploaded = []
+
+    def start(pdf, *, authority_name=None):
+        assert pdf.read_bytes() == _pdf_bytes()
+        assert authority_name == "Министерство природы"
+        uploaded.append(pdf)
+        return original_start(pdf, authority_name=authority_name)
+
+    monkeypatch.setattr(manager, "start", start)
+    response = client.post(
+        "/api/ocr/upload", files={"file": ("документ.pdf", _pdf_bytes(), "application/pdf")},
+        data={"authority_name": " Министерство природы "},
+    )
+    assert response.status_code == 200
+    job = response.json()
+    assert job["docx_ready"] is True
+    assert not uploaded[0].exists()
+    assert client.get(f"/api/ocr/jobs/{job['job_id']}/docx").content == b"fake docx bytes"
+
+
+@pytest.mark.parametrize("name,content", [("file.txt", b"text"), ("fake.pdf", b"not a pdf"), ("empty.pdf", b"")])
+def test_upload_rejects_invalid_pdf(tmp_path, monkeypatch, name, content):
+    client = _client(tmp_path, monkeypatch, done=False)
+    monkeypatch.setattr(webapp.ocr_jobs, "start", lambda *a, **kw: pytest.fail("Invalid PDF reached OCR"))
+    assert client.post("/api/ocr/upload", files={"file": (name, content)}).status_code == 400
+
+
+@pytest.mark.parametrize("code,expected", [(409, 409), (503, 503)])
+def test_upload_reports_ocr_unavailable_and_cleans_file(tmp_path, monkeypatch, code, expected):
+    from npa_pipeline.ocr_jobs import JobBusyError, OcrServiceUnavailableError
+
+    client = _client(tmp_path, monkeypatch, done=False)
+    uploaded = []
+
+    def start(pdf, **kwargs):
+        uploaded.append(pdf)
+        raise JobBusyError() if code == 409 else OcrServiceUnavailableError("offline")
+
+    monkeypatch.setattr(webapp.ocr_jobs, "start", start)
+    response = client.post("/api/ocr/upload", files={"file": ("scan.pdf", _pdf_bytes())})
+    assert response.status_code == expected
+    assert not uploaded[0].exists()
+
+
+def test_upload_same_filename_has_unique_results(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, done=True)
+    paths = []
+    original = webapp.ocr_jobs.start
+
+    def start(pdf, **kwargs):
+        job = original(pdf, **kwargs)
+        paths.append(job.docx_path)
+        return job
+
+    monkeypatch.setattr(webapp.ocr_jobs, "start", start)
+    for _ in range(2):
+        assert client.post("/api/ocr/upload", files={"file": ("same.pdf", _pdf_bytes())}).status_code == 200
+    assert paths[0] != paths[1]
+
+
+def test_upload_rejects_oversized_pdf(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, done=False)
+    monkeypatch.setattr(webapp, "MAX_UPLOAD_BYTES", 10)
+    assert client.post("/api/ocr/upload", files={"file": ("scan.pdf", _pdf_bytes())}).status_code == 413
+
+
+def test_upload_rejects_encrypted_pdf(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, done=False)
+    writer = PdfWriter()
+    writer.add_blank_page(width=595, height=842)
+    writer.encrypt("password")
+    stream = BytesIO()
+    writer.write(stream)
+    assert client.post("/api/ocr/upload", files={"file": ("scan.pdf", stream.getvalue())}).status_code == 400

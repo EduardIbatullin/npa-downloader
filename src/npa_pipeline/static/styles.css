@@ -23,6 +23,24 @@
 
 * { box-sizing: border-box; }
 
+.pdf-drop-zone {
+  border: 2px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  background: var(--panel);
+  transition: border-color 0.15s, background 0.15s;
+  overflow-wrap: anywhere;
+}
+
+.pdf-drop-zone.drag-over,
+.pdf-drop-zone:focus-within {
+  border-color: var(--accent);
+  background: var(--ok-bg);
+}
+
+.pdf-drop-zone p:first-child { margin-top: 0; }
+.pdf-drop-zone input[type="file"] { max-width: 100%; }
+
 body {
   margin: 0;
   min-height: 100vh;

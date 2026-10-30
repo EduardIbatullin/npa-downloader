@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query as FastQuery
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Query as FastQuery
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DEFAULT_DB = ROOT / DEFAULT_DB_PATH
 DEFAULT_OUT = ROOT / "downloads"
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 _ITS_HINT = re.compile(
     r"^\s*(?:итс|ндт)\b",
@@ -722,6 +724,55 @@ def api_fetch_its(body: FetchItsRequest) -> dict:
         if f.get("pdf_path"):
             f["pdf_url"] = f"/api/its/pdf/{f['file_id']}"
     return payload
+
+
+@app.post("/api/ocr/upload")
+def api_ocr_upload(
+    file: UploadFile = File(...),
+    authority_name: str | None = Form(default=None),
+) -> dict:
+    """Принимает PDF с компьютера и запускает его распознавание.
+
+    Args:
+        file: PDF-документ размером до 100 МБ.
+        authority_name: Орган, издавший документ, для восстановления шапки.
+
+    Returns:
+        Состояние задания для существующих маршрутов статуса и скачивания.
+
+    Raises:
+        HTTPException: 400 для некорректного PDF, 413 при превышении размера,
+            409 при занятом сервисе или 503 при его недоступности.
+    """
+    import pypdf
+
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Выберите PDF-документ.")
+    # Уникальный префикс исключает коллизии результатов одноимённых загрузок.
+    with tempfile.TemporaryDirectory(prefix="npa-upload-") as directory:
+        filename = (file.filename or "document.pdf").replace("\\", "/").rsplit("/", 1)[-1]
+        pdf = Path(directory) / f"{Path(directory).name}_{filename}"
+        size = 0
+        with pdf.open("wb") as target:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Максимальный размер PDF — 100 МБ.")
+                target.write(chunk)
+        try:
+            reader = pypdf.PdfReader(pdf)
+            if reader.is_encrypted or not reader.pages:
+                raise ValueError("PDF защищён паролем или не содержит страниц")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Не удалось прочитать PDF. Проверьте файл и снимите защиту паролем.") from exc
+        try:
+            job = ocr_jobs.start(pdf, authority_name=(authority_name or "").strip() or None)
+        except JobBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OcrServiceUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=f"Сервис распознавания недоступен: {exc}") from exc
+        # Сервис уже принял PDF; локальный временный файл больше не нужен.
+        return job.to_dict()
 
 
 @app.post("/api/ocr")

@@ -22,6 +22,7 @@ dev = [
 ]
 web = [
     "fastapi>=0.115",
+    "python-multipart>=0.0.20",
     "uvicorn[standard]>=0.30",
 ]
 # OCR — отдельный сервис npa-ocr (https://github.com/EduardIbatullin/npa-ocr), с которым
