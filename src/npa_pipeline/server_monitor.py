@@ -20,6 +20,7 @@ Ollama — какие модели загружены и сколько виде
 from __future__ import annotations
 
 import os
+import platform
 import shutil
 import subprocess
 import threading
@@ -292,5 +293,5 @@ def snapshot(disk_path: Path, ocr_url: str | None = None) -> dict:
     if ocr_url:
         services.append(check_http("npa-ocr", f"{ocr_url.rstrip('/')}/health"))
     out["services"] = services
-    out["hostname"] = os.environ.get("MONITOR_HOSTNAME") or os.uname().nodename
+    out["hostname"] = os.environ.get("MONITOR_HOSTNAME") or platform.node()
     return out
