@@ -44,6 +44,17 @@ function fileActions(file) {
 
 let activeOcrJob = null;
 let ocrTimer = null;
+let ocrStatusSelector = "#ocr-status";
+let ocrStarting = false;
+let uploadFile = null;
+
+function updateOcrButtons() {
+  const busy = ocrStarting || Boolean(activeOcrJob);
+  const upload = $("#btn-upload");
+  if (upload) upload.disabled = busy || !uploadFile;
+  const lookup = $("#btn-ocr");
+  if (lookup) lookup.disabled = busy;
+}
 
 function fmtElapsed(sec) {
   const m = Math.floor(sec / 60);
@@ -68,13 +79,13 @@ function ocrStatusHtml(job) {
       <a class="btn primary" href="/api/ocr/jobs/${id}/docx" download>Скачать DOCX</a>`;
   }
   if (job.status === "cancelled") {
-    return `<p class="ocr-line">Остановлено. Повторный запуск продолжит с сохранённых страниц.</p>`;
+    return `<p class="ocr-line">Распознавание остановлено.</p>`;
   }
   return `<p class="ocr-line">Ошибка: ${esc(job.error || "распознавание не завершено")}</p>`;
 }
 
 function renderOcrStatus(job) {
-  const el = $("#ocr-status");
+  const el = $(ocrStatusSelector);
   if (el) el.innerHTML = ocrStatusHtml(job);
 }
 
@@ -86,7 +97,8 @@ async function pollOcr() {
     const job = await res.json();
     if (!res.ok) {
       activeOcrJob = null;
-      const el = $("#ocr-status");
+      updateOcrButtons();
+      const el = $(ocrStatusSelector);
       if (el) el.textContent = typeof job.detail === "string" ? job.detail : "Задание не найдено";
       return;
     }
@@ -95,6 +107,7 @@ async function pollOcr() {
       ocrTimer = setTimeout(pollOcr, 5000);
     } else {
       activeOcrJob = null;
+      updateOcrButtons();
     }
   } catch (err) {
     ocrTimer = setTimeout(pollOcr, 5000);
@@ -102,6 +115,10 @@ async function pollOcr() {
 }
 
 async function startOcr(eoNumber, authorityName) {
+  if (ocrStarting || activeOcrJob) return;
+  ocrStatusSelector = "#ocr-status";
+  ocrStarting = true;
+  updateOcrButtons();
   const el = $("#ocr-status");
   if (el) el.textContent = "Запуск…";
   try {
@@ -120,6 +137,9 @@ async function startOcr(eoNumber, authorityName) {
     pollOcr();
   } catch (err) {
     if (el) el.textContent = String(err);
+  } finally {
+    ocrStarting = false;
+    updateOcrButtons();
   }
 }
 
@@ -193,6 +213,7 @@ function renderResult(data) {
 
   root.className = "result";
   root.innerHTML = body;
+  updateOcrButtons();
   if (activeOcrJob) pollOcr();
 }
 
@@ -248,6 +269,86 @@ $("#result").addEventListener("click", (e) => {
   const urlId = Number(btn.dataset.urlId);
   const q = $("#query").value.trim() || null;
   lookup({ q, url_id: urlId });
+});
+
+function selectPdf(files) {
+  const list = Array.from(files || []);
+  const status = $("#upload-status");
+  if (ocrStarting || activeOcrJob) return;
+  uploadFile = null;
+  $("#pdf-selected").textContent = "Файл не выбран · до 100 МБ";
+  updateOcrButtons();
+  if (list.length !== 1 || !list[0].name.toLowerCase().endsWith(".pdf")) {
+    status.textContent = "Выберите один PDF-документ.";
+    return;
+  }
+  const file = list[0];
+  if (!file.size || file.size > 100 * 1024 * 1024) {
+    status.textContent = "PDF должен быть непустым и не больше 100 МБ.";
+    return;
+  }
+  uploadFile = file;
+  $("#pdf-selected").textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} МБ`;
+  status.textContent = "Файл выбран. Нажмите «Распознать PDF».";
+  updateOcrButtons();
+}
+
+$("#pdf-file").addEventListener("change", (event) => selectPdf(event.target.files));
+const dropZone = $("#pdf-drop-zone");
+dropZone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  dropZone.classList.add("drag-over");
+});
+dropZone.addEventListener("dragleave", (event) => {
+  if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove("drag-over");
+});
+// Не даём браузеру открыть перетаскиваемый файл вместо приложения.
+document.addEventListener("dragover", (event) => {
+  if (Array.from(event.dataTransfer?.types || []).includes("Files")) event.preventDefault();
+});
+document.addEventListener("drop", (event) => {
+  if (!event.dataTransfer?.files.length) return;
+  event.preventDefault();
+  dropZone.classList.remove("drag-over");
+  if (dropZone.contains(event.target)) selectPdf(event.dataTransfer.files);
+});
+document.addEventListener("paste", (event) => {
+  const files = event.clipboardData?.files;
+  if (!files?.length) return;
+  event.preventDefault();
+  selectPdf(files);
+});
+$("#upload-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!uploadFile || ocrStarting || activeOcrJob) return;
+  ocrStatusSelector = "#upload-status";
+  ocrStarting = true;
+  updateOcrButtons();
+  const status = $("#upload-status");
+  status.textContent = "Загрузка PDF и запуск распознавания…";
+  const body = new FormData();
+  body.append("file", uploadFile);
+  body.append("authority_name", $("#upload-authority").value.trim());
+  try {
+    const response = await fetch("/api/ocr/upload", { method: "POST", body });
+    const job = await response.json();
+    if (!response.ok) {
+      status.textContent = typeof job.detail === "string" ? job.detail : "Не удалось загрузить PDF.";
+      return;
+    }
+    activeOcrJob = job.job_id;
+    renderOcrStatus(job);
+    pollOcr();
+  } catch (error) {
+    status.textContent = `Ошибка загрузки: ${error}`;
+  } finally {
+    ocrStarting = false;
+    updateOcrButtons();
+  }
+});
+$("#upload-status").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-ocr-cancel]");
+  if (button) cancelOcr(button.dataset.ocrCancel);
 });
 
 loadHealth();

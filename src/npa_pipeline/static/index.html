@@ -57,6 +57,25 @@
         </form>
       </section>
 
+      <section class="panel" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Распознать PDF с компьютера</h2>
+        <form id="upload-form" class="form">
+          <div id="pdf-drop-zone" class="pdf-drop-zone" tabindex="0" role="group" aria-label="Загрузка PDF" aria-describedby="pdf-upload-hint">
+            <p id="pdf-upload-hint">Перетащите PDF сюда или скопируйте файл и нажмите Ctrl+V на странице.</p>
+            <label for="pdf-file">Выбрать PDF</label>
+            <input id="pdf-file" type="file" accept=".pdf,application/pdf" />
+            <p id="pdf-selected" class="hint" aria-live="polite">Файл не выбран · до 100 МБ</p>
+          </div>
+          <label>Орган, издавший документ (необязательно)
+            <input id="upload-authority" type="text" placeholder="Например, Министерство природных ресурсов и экологии Российской Федерации" />
+          </label>
+          <div class="actions">
+            <button type="submit" class="btn primary" id="btn-upload" disabled>Распознать PDF</button>
+          </div>
+          <div id="upload-status" class="ocr-status" role="status" aria-live="polite"></div>
+        </form>
+      </section>
+
       <section class="panel">
         <h2>Результат</h2>
         <div id="result" class="result empty">Введите название и нажмите «Найти».</div>

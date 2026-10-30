@@ -82,7 +82,7 @@ def _ebpi_handler_found(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"docid": 1, "docstate": "Действует без изменений", "error": ""})
     if path == "/api/ebpi/redactions/":
         return httpx.Response(
-            200, json={"redactions": [{"redid": 1, "redinitial": True, "actual": False}], "error": ""}
+            200, json={"redactions": [{"redid": 1, "redinitial": True, "actual": False, "reddate": "20250523"}], "error": ""}
         )
     if path == "/api/ebpi/redtext":
         return httpx.Response(200, json={"redtext": "<html><body><p>Текст постановления</p></body></html>"})
